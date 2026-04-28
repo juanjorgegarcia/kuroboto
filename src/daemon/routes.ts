@@ -1,3 +1,6 @@
+import fsp from 'node:fs/promises';
+import path from 'node:path';
+import os from 'node:os';
 import type { Express, Request, Response } from 'express';
 import type { DaemonContext } from './server.js';
 import type { PreToolUsePayload, NotificationPayload, Decision } from '../core/types.js';
@@ -49,6 +52,63 @@ export function registerRoutes(app: Express, ctx: DaemonContext): void {
     const snap = ctx.state.gaming.snapshot();
     ctx.logger.info('gaming toggled', snap as unknown as Record<string, unknown>);
     res.json({ ok: true, active: snap.active, until: snap.until });
+  });
+
+  app.get('/v1/sleeping', (_req, res) => {
+    res.json(ctx.state.sleeping.snapshot());
+  });
+
+  app.post('/v1/sleeping', async (req: Request, res: Response) => {
+    const body = (req.body ?? {}) as {
+      repo?: string;
+      prompt?: string;
+      plan?: string;
+      maxDurationMs?: number;
+    };
+    if (typeof body.repo !== 'string' || !body.repo) {
+      res.status(400).json({ error: 'repo required' });
+      return;
+    }
+    if (!body.prompt && !body.plan) {
+      res.status(400).json({ error: 'prompt or plan required' });
+      return;
+    }
+    if (body.prompt && body.plan) {
+      res.status(400).json({ error: 'prompt and plan are mutually exclusive' });
+      return;
+    }
+    const maxDurationMs = body.maxDurationMs ?? ctx.config.policy.sleepMaxDurationMs;
+    const workRoot = expandHome(ctx.config.policy.sleepWorktreeDir);
+    try {
+      await fsp.mkdir(workRoot, { recursive: true });
+      const session = await ctx.state.sleeping.start({
+        repo: body.repo,
+        workRoot,
+        maxDurationMs,
+        prompt: body.prompt,
+        plan: body.plan,
+      });
+      res.status(202).json({
+        ok: true,
+        slug: session.slug,
+        branch: session.branch,
+        worktreePath: session.worktreePath,
+        startedAt: session.startedAt,
+        expectedEndAt: session.expectedEndAt,
+      });
+    } catch (e) {
+      const msg = (e as Error).message;
+      if (msg.includes('already')) {
+        res.status(409).json({ error: msg });
+      } else {
+        res.status(400).json({ error: msg });
+      }
+    }
+  });
+
+  app.delete('/v1/sleeping', async (_req, res) => {
+    const cancelled = await ctx.state.sleeping.cancel();
+    res.json({ ok: true, cancelled, reason: cancelled ? 'cancelled' : 'idle' });
   });
 
   app.put('/v1/mode', (req: Request, res: Response) => {
@@ -210,4 +270,11 @@ function deriveSource(d: Decision): string {
   if (d.decision === 'deny' && d.reason === 'timeout') return 'timeout';
   if (d.decision === 'ask' && d.reason === 'channel unavailable') return 'channel-error';
   return 'telegram';
+}
+
+function expandHome(p: string): string {
+  if (p.startsWith('~/') || p === '~') {
+    return path.join(os.homedir(), p.slice(2));
+  }
+  return p;
 }

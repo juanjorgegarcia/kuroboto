@@ -82,6 +82,8 @@ export async function initCommand(): Promise<void> {
       permissionMatchers: ['Bash', 'Edit', 'Write'],
       rememberGranularity: 'tight',
       gamingAlwaysAsk: [],
+      sleepMaxDurationMs: 2 * 60 * 60 * 1000,
+      sleepWorktreeDir: '~/.kuroboto/worktrees',
       failOpen: true,
     },
   };

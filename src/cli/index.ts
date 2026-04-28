@@ -11,6 +11,7 @@ import { ohayoCommand } from './ohayo.js';
 import { allowlistList, allowlistExport } from './allowlist.js';
 import { auditList, auditExport } from './audit.js';
 import { gamingOnCommand, gamingOffCommand, gamingStatusCommand } from './gaming.js';
+import { sleepingStartCommand, sleepingCancelCommand, sleepingStatusCommand } from './sleeping.js';
 
 // Special-case: `kuroboto claude [...args]` forwards everything raw to Claude Code.
 // Commander would otherwise eat global flags like --version / --help before they
@@ -176,6 +177,45 @@ gaming
       await gamingStatusCommand();
     } catch (e) {
       console.error(`gaming status failed: ${(e as Error).message}`);
+      process.exit(1);
+    }
+  });
+
+const sleeping = program.command('sleeping').description('Run a plan/prompt autonomously in a worktree (sleep mode)');
+sleeping
+  .command('start')
+  .description('Start a sleep session — Claude implements a plan/prompt while you are away')
+  .option('--prompt <text>', 'free-form prompt for Claude (mutually exclusive with --plan)')
+  .option('--plan <file>', 'path to a plan markdown file (mutually exclusive with --prompt)')
+  .option('--repo <path>', 'repo to operate on (default: cwd)')
+  .option('--max <duration>', 'max duration like 2h, 30m (default: policy.sleepMaxDurationMs)')
+  .action(async (opts: { prompt?: string; plan?: string; repo?: string; max?: string }) => {
+    try {
+      await sleepingStartCommand(opts);
+    } catch (e) {
+      console.error(`sleeping start failed: ${(e as Error).message}`);
+      process.exit(1);
+    }
+  });
+sleeping
+  .command('cancel')
+  .description('Cancel the active sleep session (worktree is left intact for inspection)')
+  .action(async () => {
+    try {
+      await sleepingCancelCommand();
+    } catch (e) {
+      console.error(`sleeping cancel failed: ${(e as Error).message}`);
+      process.exit(1);
+    }
+  });
+sleeping
+  .command('status')
+  .description('Show whether a sleep session is active')
+  .action(async () => {
+    try {
+      await sleepingStatusCommand();
+    } catch (e) {
+      console.error(`sleeping status failed: ${(e as Error).message}`);
       process.exit(1);
     }
   });
