@@ -67,9 +67,11 @@ them, by design.
 Resolution order in `/v1/permission`:
 
 ```
-gaming.active  &&  tool ∉ gamingAlwaysAsk    → allow immediately
-mode === 'here'  ||  tool ∉ permissionMatchers → ask (Claude UI handles it)
-mode === 'away'  &&  tool matched              → Telegram prompt with 4 buttons
+gaming.active  &&  tool ∉ gamingAlwaysAsk        → allow immediately
+mode === 'here'  ||  tool ∉ permissionMatchers   → ask (Claude UI handles it)
+allowlist deny match (cwd settings.local.json)   → deny immediately
+allowlist allow match (cwd settings.local.json)  → allow immediately
+mode === 'away'  &&  tool matched                 → Telegram prompt with 4 buttons
 ```
 
 ### `here` — you're at the keyboard
@@ -98,6 +100,42 @@ Permission prompts arrive in Telegram with four buttons:
 
 Permission timeout is `policy.permissionTimeoutMs` (default 55s); on timeout
 the request is denied with `reason: 'timeout'`.
+
+**Telegram message format.** Each prompt shows a header that identifies the
+session at a glance plus what Claude is reasoning about:
+
+```
+[hostname / folder / "first user message"]
+💭 last assistant text before the tool call
+
+Pode rodar?
+Bash: rm -rf /tmp/foo
+```
+
+Sleep mode swaps the header to `[hostname / 💤 slug]` (no first-user-message,
+since the first prompt is just the daemon's plan-execution boilerplate). All
+fields degrade gracefully to omission if the transcript is missing.
+
+### Allowlist match — remember takes effect immediately
+
+Before going to Telegram, the daemon reads `<payload.cwd>/.claude/settings.local.json`
+and short-circuits if the tool call matches a `permissions.deny[]` or
+`permissions.allow[]` entry. Deny wins over allow. This closes the gap where
+🔓 Allow & remember used to only take effect on the *next* Claude session.
+
+Pattern grammar (subset of Claude Code's):
+
+| Pattern | Meaning |
+|---|---|
+| `Bash` | any Bash call |
+| `Bash(npm:*)` | first token = `npm` |
+| `Bash(npm install:*)` | first two tokens = `npm install` |
+| `Bash(npm install foo)` | exact command |
+| `Edit(/src/**)` | minimatch glob over `file_path` (covers dotfiles) |
+| `Read(//tmp/**)` | double-slash for absolute paths (Claude Code convention) |
+
+Audit sources: `allowlist-allow`, `allowlist-deny`. Lookup is per-request (not
+cached) so concurrent edits in the same project take effect on the next prompt.
 
 ### `gaming` — distracted, not gone
 
@@ -144,6 +182,37 @@ Invariants:
 - **Daemon restart cancels** active sessions (state is in-memory only)
 - **Gaming stays armed during `git push`/`gh pr create`** (restore happens
   after `await onSuccess` resolves)
+
+## Free-text Q&A via tmux inject (opt-in)
+
+When Claude pauses for free-form text input (`Notification` hook with message
+`Claude is waiting for your input`), kuroboto can forward the question to
+Telegram with a 💬 Reply button and inject your reply back into the running
+Claude session via `tmux send-keys -l` (literal mode, preserves quotes,
+`$`, backticks, newlines).
+
+Setup (init wizard offers this as a step):
+
+1. `inject.enabled: true` in `~/.config/kuroboto/config.json`
+2. `inject.session: "claude"` (your tmux session name)
+3. `kuroboto ohayo` (creates the tmux session) or `tmux new -s claude` first
+
+The daemon **refuses to start** if `inject.enabled = true` but tmux isn't
+available or the session doesn't exist — silent runtime failures here are
+worse than failed startup.
+
+Failure modes are surfaced inline (Telegram fallback message with the user's
+text + audit `qa-inject-failed`) so a stuck session is visible. Reply timeout
+is `inject.replyTimeoutMs` (default 2h).
+
+## Desktop notifications on sleep finish (opt-in)
+
+When `notifications.desktop: true`, sleep success/failure/timeout events fire
+a native OS toast (Windows Toast / macOS NotificationCenter / libnotify) in
+addition to the Telegram message. Useful when you're at the desk but not
+watching the chat.
+
+Levels: success → silent toast; error/timeout → audible toast.
 
 ## Filesystem state
 
@@ -208,10 +277,11 @@ POST /v1/permission       → decide (returns { decision, reason?, remember? })
 - `awaitingNoteFor` (deny-with-note state) is a single slot — two simultaneous
   deny-with-note clicks collide; the first request waits for `permissionTimeoutMs`
   and ends with `reason: 'timeout'`.
-- Daemon does **not** check `<cwd>/.claude/settings.local.json` before prompting
-  via Telegram, so the matchers persisted by Allow & remember don't take effect
-  until you restart the Claude session. (Tracked as a follow-up.)
-- `kuroboto ohayo` is currently broken (`[server exited unexpectedly]`).
+- One sleep session at a time (parallel sleeps are designed in `docs/specs/parallel-sleeps.md`
+  but deferred behind PTY injection).
+- Tmux inject locks the user into a tmux session (which interferes with native
+  terminal UX — bell signals, status icons). PTY-based injection is in flight as
+  Spec E (`docs/specs/pty-injection.md`) and removes the tmux requirement.
 - Default `policy.notifyDelayMs` is 60s — recommend lowering to 15s for the
   intended UX.
 - Sleep mode does not yet write `.kuroboto-sleep.log` (the headless Claude's
@@ -222,6 +292,19 @@ POST /v1/permission       → decide (returns { decision, reason?, remember? })
 
 ## Spec docs
 
+Shipped:
 - [docs/specs/gaming-mode.md](docs/specs/gaming-mode.md)
 - [docs/specs/sleep-mode.md](docs/specs/sleep-mode.md)
+- [docs/specs/allowlist-match.md](docs/specs/allowlist-match.md)
+- [docs/specs/prompt-context.md](docs/specs/prompt-context.md)
+- [docs/specs/prompt-freetext-qa.md](docs/specs/prompt-freetext-qa.md)
+- [docs/specs/desktop-notifications.md](docs/specs/desktop-notifications.md)
+
+In flight / planned:
+- [docs/specs/pty-injection.md](docs/specs/pty-injection.md) — Spec E
+- [docs/specs/parallel-sleeps.md](docs/specs/parallel-sleeps.md) — Spec D, deferred
+- [docs/specs-backlog.md](docs/specs-backlog.md) — supergroup+topics, level-2 hooks, etc.
+
+Other:
 - [docs/design.md](docs/design.md) — original v0.2 architecture
+- [docs/workflows/spec-via-sleep.md](docs/workflows/spec-via-sleep.md) — brainstorm → spec → sleep → PR loop
