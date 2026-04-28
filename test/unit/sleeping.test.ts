@@ -66,18 +66,18 @@ describe('SleepingOrchestrator', () => {
       workRoot: '/y/wt',
       maxDurationMs: 60_000,
     });
-    expect(session.slug).toMatch(/^implement-billing-flow$/);
-    expect(session.branch).toBe('sleep/implement-billing-flow');
+    expect(session.slug).toMatch(/^implement-billing-flow-[a-z0-9]{6}$/);
+    expect(session.branch).toMatch(/^sleep\/implement-billing-flow-[a-z0-9]{6}$/);
     expect(state.worktreeCreated).toEqual({
       repo: '/x/repo',
-      branch: 'sleep/implement-billing-flow',
-      dir: '/y/wt/implement-billing-flow',
+      branch: session.branch,
+      dir: `/y/wt/${session.slug}`,
     });
     expect(deps.gaming.snapshot().active).toBe(true);
     expect(state.child).toBeDefined();
     const snap = orch.snapshot();
     expect(snap.active).toBe(true);
-    if (snap.active) expect(snap.slug).toBe('implement-billing-flow');
+    if (snap.active) expect(snap.slug).toMatch(/^implement-billing-flow-[a-z0-9]{6}$/);
   });
 
   it('rejects start when one is already active', async () => {

@@ -28,23 +28,30 @@ async function makeRepo(): Promise<string> {
 
 describe('slugify', () => {
   it('lowercases and replaces non-alphanumeric with dashes', () => {
-    expect(slugify('Implement Billing Flow!')).toMatch(/^implement-billing-flow$/);
+    expect(slugify('Implement Billing Flow!', false)).toMatch(/^implement-billing-flow$/);
   });
   it('collapses multiple dashes', () => {
-    expect(slugify('foo --- bar')).toBe('foo-bar');
+    expect(slugify('foo --- bar', false)).toBe('foo-bar');
   });
   it('trims leading/trailing dashes', () => {
-    expect(slugify('  --foo--  ')).toBe('foo');
+    expect(slugify('  --foo--  ', false)).toBe('foo');
   });
   it('caps length and uses first words', () => {
     const long = 'word '.repeat(50);
-    const slug = slugify(long);
+    const slug = slugify(long, false);
     expect(slug.length).toBeLessThanOrEqual(40);
     expect(slug).toMatch(/^[a-z0-9-]+$/);
   });
   it('handles empty/all-symbols input by returning a fallback', () => {
-    expect(slugify('!!!')).toBe('sleep');
-    expect(slugify('')).toBe('sleep');
+    expect(slugify('!!!', false)).toBe('sleep');
+    expect(slugify('', false)).toBe('sleep');
+  });
+  it('default mode appends a 6-char random suffix', () => {
+    const a = slugify('foo');
+    const b = slugify('foo');
+    expect(a).toMatch(/^foo-[a-z0-9]{6}$/);
+    expect(b).toMatch(/^foo-[a-z0-9]{6}$/);
+    expect(a).not.toBe(b); // randomness
   });
 });
 

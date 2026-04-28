@@ -1,6 +1,6 @@
 import fsp from 'node:fs/promises';
 import { type Server } from 'node:http';
-import { spawn } from 'node:child_process';
+import { spawn as nodeSpawn, type SpawnOptions } from 'node:child_process';
 import type { Channel } from '../channels/Channel.js';
 import type { ConfigT } from '../config/schema.js';
 import { TelegramChannel } from '../channels/telegram/TelegramChannel.js';
@@ -35,8 +35,10 @@ export async function startDaemon(config: ConfigT): Promise<RunningDaemon> {
   const pendingNotifications = new PendingNotifications();
   const initialMode: Mode = await loadMode();
   const gaming = new GamingState();
+  const claudeSpawn = (cmd: string, args: string[], opts?: SpawnOptions): ReturnType<typeof nodeSpawn> =>
+    nodeSpawn(cmd, args, { ...opts, shell: true });
   const sleeping = new SleepingOrchestrator({
-    spawn,
+    spawn: claudeSpawn,
     gaming,
     notify: (msg) => channel.sendNotification(msg),
     audit: async () => {}, // skip audit at daemon level; sleep events go to Telegram
@@ -46,7 +48,7 @@ export async function startDaemon(config: ConfigT): Promise<RunningDaemon> {
       finishSleep(session, {
         exec: async (cmd, args, opts) => {
           return new Promise((resolve) => {
-            const child = spawn(cmd, args, { cwd: opts?.cwd, shell: false });
+            const child = nodeSpawn(cmd, args, { cwd: opts?.cwd, shell: true });
             let stdout = '';
             let stderr = '';
             child.stdout?.on('data', (b) => (stdout += b.toString()));
