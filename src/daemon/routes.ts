@@ -98,6 +98,10 @@ export function registerRoutes(app: Express, ctx: DaemonContext): void {
         source: 'gaming',
         remember: false,
       }).catch((e) => ctx.logger.warn('audit append failed', { err: (e as Error).message }));
+      // Fire-and-forget FYI notification (no buttons) so the user can monitor
+      // what Claude is doing while gaming mode auto-allows everything.
+      ctx.channel.sendNotification(`🎮 ${formatPermissionPrompt(payload)}`)
+        .catch((e) => ctx.logger.warn('gaming notify failed', { err: (e as Error).message }));
       res.json(decision);
       return;
     }
