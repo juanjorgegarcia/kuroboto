@@ -24,6 +24,34 @@ Telegram **supergroups with forum mode** allow a chat to be split into named top
 
 This unlocks multi-Claude UX naturally and reduces the need for tmux multi-mapping (Spec B's open follow-up).
 
+## Extensible sleep finish-hooks (Level 2 of desktop notifications)
+
+After Spec C ships native desktop notifications (`docs/specs/desktop-notifications.md`), the natural next step if other notification surfaces are wanted is a generic hook system:
+
+- New config: `policy.sleepFinishHooks: string[]` — each entry is a shell command the daemon executes when a sleep session finishes
+- Result data passed to hooks via stdin (JSON: `{ slug, branch, prUrl?, status: 'success'|'timeout'|'error', durationMs }`) and/or env vars (`KUROBOTO_SLEEP_*`)
+- User-defined hooks: ping a Slack webhook, play a sound (`afplay /path/to/sound.mp3`), open the PR in browser (`open <url>`), update a kanban, etc.
+- Failure handling: each hook runs with a short timeout; failures are audited but don't break sleep flow
+
+This is **YAGNI today** — a single config toggle for desktop notifications covers the immediate pain. Promote to a real spec only when (a) someone wants a second hook surface and (b) hardcoding it in the daemon (like Spec C does) starts feeling wrong.
+
+## Auto-cleanup of finished sleep worktrees
+
+Every sleep that lands a merged PR currently leaves orphan state behind:
+
+- Worktree at `~/.kuroboto/worktrees/<slug>-<rand>` (file content + `.git` ref)
+- Local branch `sleep/<slug>-<rand>` that the worktree pins (so `gh pr merge --delete-branch` can't remove it)
+
+Witnessed live on PR #10 merge: `gh pr merge` failed to delete the branch because the worktree was holding it. Manual `git worktree remove` + `git branch -D` was needed.
+
+Possible solutions (pick one or combine):
+
+- **Option A — Daemon-side:** when sleep finish detects the PR was merged (poll `gh pr view <num> --json state` after open), automatically prune the worktree + branch. Requires the daemon to keep watching the PR after open, which extends sleep state lifetime.
+- **Option B — CLI subcommand:** `kuroboto sleeping cleanup` runs `git worktree list` + `gh pr view` for each `sleep/*` branch, deletes worktrees whose PR is merged. User invokes manually after merge sweeps. Lightweight.
+- **Option C — Post-merge hook (depends on Level 2 above):** define a hook that triggers cleanup on merge.
+
+Recommend **B** as the simplest: opt-in cleanup the user runs when convenient. Promote to spec if it becomes a daily annoyance.
+
 ## Smaller follow-ups (from out-of-scope sections of shipped specs)
 
 - **Cached transcript reads** with `mtime` invalidation. Premature optimization at our scale; revisit if `transcript.ts` reads become a bottleneck.
