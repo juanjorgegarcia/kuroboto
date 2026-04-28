@@ -71,11 +71,31 @@ export async function initCommand(): Promise<void> {
   });
   const port = (portAns.val as number) ?? 47891;
 
+  console.log(chalk.cyan('\nQ&A inject (tmux): permite responder no Telegram quando o Claude pausa pedindo input livre.'));
+  console.log('Requer tmux instalado e o Claude rodando dentro de uma sessão tmux.');
+  const injectAns = await prompts({
+    type: 'confirm',
+    name: 'val',
+    message: 'Habilitar inject via tmux? (default: não)',
+    initial: false,
+  });
+  let inject: ConfigT['inject'] = { enabled: false, replyTimeoutMs: 7_200_000 };
+  if (injectAns.val === true) {
+    const sessionAns = await prompts({
+      type: 'text',
+      name: 'val',
+      message: 'Nome da sessão tmux:',
+      initial: 'claude',
+    });
+    const session = ((sessionAns.val as string) ?? 'claude').trim() || 'claude';
+    inject = { enabled: true, strategy: 'tmux', session, replyTimeoutMs: 7_200_000 };
+  }
+
   const authToken = randomBytes(32).toString('hex');
   const config: ConfigT = {
     channel: { type: 'telegram', token, chatId },
     daemon: { port, authToken },
-    inject: { enabled: false },
+    inject,
     policy: {
       permissionTimeoutMs: 55_000,
       notifyDelayMs: 60_000,

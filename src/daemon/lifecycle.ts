@@ -10,12 +10,15 @@ import { CONFIG_DIR, LOG_DIR, PID_FILE } from '../config/paths.js';
 import { DaemonError } from '../core/errors.js';
 import { PendingMap } from './pending.js';
 import { PendingNotifications } from './pendingNotifications.js';
+import { PendingReplies } from './pendingReplies.js';
 import { loadMode, type Mode } from './state.js';
 import { GamingState } from './gaming.js';
 import { SleepingOrchestrator } from './sleeping.js';
 import { createWorktree, removeWorktree } from './worktree.js';
 import { finishSleep } from './sleepFinish.js';
 import { createServer, type DaemonContext } from './server.js';
+import { createInjectStrategy } from '../inject/index.js';
+import { validateTmuxAvailable } from '../inject/validate.js';
 
 export interface RunningDaemon {
   stop(): Promise<void>;
@@ -27,6 +30,10 @@ export async function startDaemon(config: ConfigT): Promise<RunningDaemon> {
 
   await ensureNoExistingDaemon();
 
+  if (config.inject.enabled) {
+    await validateTmuxAvailable(config.inject.session ?? 'claude');
+  }
+
   const logger = createLogger(LOG_DIR);
   logger.info('daemon starting', { port: config.daemon.port });
 
@@ -34,6 +41,8 @@ export async function startDaemon(config: ConfigT): Promise<RunningDaemon> {
   const pending = new PendingMap();
   pending.startCleanupLoop();
   const pendingNotifications = new PendingNotifications();
+  const pendingReplies = new PendingReplies();
+  const inject = createInjectStrategy(config.inject);
   const initialMode: Mode = await loadMode();
   const gaming = new GamingState();
   // shell:false so --body markdown passes through verbatim. Node 16+ resolves
@@ -70,6 +79,13 @@ export async function startDaemon(config: ConfigT): Promise<RunningDaemon> {
     logger.info('decision received', { requestId: event.requestId, claimed });
   });
 
+  channel.on('freeText', (event) => {
+    if (event.replyToMessageId) {
+      const claimed = pendingReplies.resolveBySentMessageId(event.replyToMessageId, event.text);
+      logger.info('reply received', { sentMessageId: event.replyToMessageId, claimed });
+    }
+  });
+
   await channel.start();
 
   const ctx: DaemonContext = {
@@ -77,6 +93,8 @@ export async function startDaemon(config: ConfigT): Promise<RunningDaemon> {
     channel,
     pending,
     pendingNotifications,
+    pendingReplies,
+    inject,
     state,
     logger,
     startedAt: Date.now(),
@@ -100,6 +118,7 @@ export async function startDaemon(config: ConfigT): Promise<RunningDaemon> {
     pending.drainAll('shutdown');
     pending.stopCleanupLoop();
     pendingNotifications.cancelAll();
+    pendingReplies.cancelAll();
     await new Promise<void>((resolve) => server.close(() => resolve()));
     try {
       await channel.sendNotification('🔻 kuroboto offline');
@@ -174,3 +193,4 @@ function makeChannel(config: ConfigT, logger: Logger): Channel {
   }
   throw new DaemonError(`unsupported channel type: ${(config.channel as { type: string }).type}`);
 }
+

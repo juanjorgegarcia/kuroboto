@@ -9,7 +9,13 @@ import { saveMode, type Mode } from './state.js';
 import { computeAllowMatcher, addProjectAllow } from './allowlist.js';
 import { loadAllowlist, matchAny } from './allowlistMatch.js';
 import { appendAudit } from './audit.js';
-import { formatPermissionPrompt, formatNotification, type PromptFormatContext } from './promptFormat.js';
+import {
+  formatPermissionPrompt,
+  formatNotification,
+  formatQAPrompt,
+  type PromptFormatContext,
+} from './promptFormat.js';
+import { isQAPrompt } from './notificationDetect.js';
 
 export function registerRoutes(app: Express, ctx: DaemonContext): void {
   const fmtCtx = (): PromptFormatContext => ({
@@ -145,6 +151,16 @@ export function registerRoutes(app: Express, ctx: DaemonContext): void {
 
   app.post('/v1/notify', (req: Request, res: Response) => {
     const payload = req.body as NotificationPayload;
+    if (shouldHandleAsQA(payload, ctx)) {
+      // Fire-and-forget: the Q&A flow runs end-to-end (send question, await
+      // reply, inject, audit) in the background. The hook just gets ack.
+      handleQAPrompt(payload, ctx, fmtCtx()).catch((e) =>
+        ctx.logger.warn('Q&A flow failed', { err: (e as Error).message }),
+      );
+      ctx.logger.info('notify received (Q&A)', { cwd: payload.cwd });
+      res.json({ ok: true, qa: true });
+      return;
+    }
     const delayMs = ctx.state.mode === 'away' ? 0 : ctx.config.policy.notifyDelayMs;
     ctx.logger.info('notify received', {
       mode: ctx.state.mode,
@@ -294,4 +310,105 @@ function expandHome(p: string): string {
     return path.join(os.homedir(), p.slice(2));
   }
   return p;
+}
+
+function shouldHandleAsQA(payload: NotificationPayload, ctx: DaemonContext): boolean {
+  if (!ctx.config.inject.enabled) return false;
+  if (!ctx.inject) return false;
+  if (!isQAPrompt(payload.message)) return false;
+  // Sleep mode is autonomous: if Claude pauses inside a sleep worktree, it's
+  // a stuck session — fall through to the regular notif path so the user can
+  // investigate, rather than waiting indefinitely for a Q&A reply.
+  const snap = ctx.state.sleeping.snapshot();
+  if (snap.active && payload.cwd && samePath(payload.cwd, snap.worktreePath)) return false;
+  return true;
+}
+
+function samePath(a: string, b: string): boolean {
+  return path.resolve(a) === path.resolve(b);
+}
+
+async function handleQAPrompt(
+  payload: NotificationPayload,
+  ctx: DaemonContext,
+  fmtCtx: PromptFormatContext,
+): Promise<void> {
+  const inject = ctx.inject;
+  if (!inject) return; // already gated upstream, but keeps types honest
+  const text = await formatQAPrompt(payload, fmtCtx);
+  let sentMessageId: string;
+  try {
+    ({ sentMessageId } = await ctx.channel.sendQuestion({ text, forceReply: true }));
+  } catch (e) {
+    ctx.logger.warn('Q&A sendQuestion failed', { err: (e as Error).message });
+    return;
+  }
+  const { promise } = ctx.pendingReplies.create(sentMessageId, ctx.config.inject.replyTimeoutMs);
+  void appendAudit({
+    ts: new Date().toISOString(),
+    requestId: sentMessageId,
+    tool: 'Q&A',
+    cwd: payload.cwd ?? null,
+    decision: 'ask',
+    reason: null,
+    source: 'qa-pending',
+    remember: false,
+  }).catch((e) => ctx.logger.warn('audit append failed', { err: (e as Error).message }));
+
+  let reply: string;
+  try {
+    reply = await promise;
+  } catch (e) {
+    const msg = (e as Error).message;
+    if (msg === 'timeout') {
+      void appendAudit({
+        ts: new Date().toISOString(),
+        requestId: sentMessageId,
+        tool: 'Q&A',
+        cwd: payload.cwd ?? null,
+        decision: 'deny',
+        reason: 'timeout',
+        source: 'qa-timeout',
+        remember: false,
+      }).catch((e2) => ctx.logger.warn('audit append failed', { err: (e2 as Error).message }));
+      await ctx.channel
+        .sendNotification('⏱ Q&A expirou (Claude pode ainda estar esperando)')
+        .catch((e2) => ctx.logger.warn('sendNotification (qa-timeout) failed', { err: (e2 as Error).message }));
+      return;
+    }
+    // shutdown / cancelled — silent drop
+    return;
+  }
+
+  try {
+    await inject.inject(reply);
+    void appendAudit({
+      ts: new Date().toISOString(),
+      requestId: sentMessageId,
+      tool: 'Q&A',
+      cwd: payload.cwd ?? null,
+      decision: 'allow',
+      reason: 'injected',
+      source: 'qa-injected',
+      remember: false,
+    }).catch((e) => ctx.logger.warn('audit append failed', { err: (e as Error).message }));
+    await ctx.channel
+      .sendNotification('✅ Reply injetada')
+      .catch((e) => ctx.logger.warn('sendNotification (qa-injected) failed', { err: (e as Error).message }));
+  } catch (e) {
+    const errMsg = (e as Error).message;
+    void appendAudit({
+      ts: new Date().toISOString(),
+      requestId: sentMessageId,
+      tool: 'Q&A',
+      cwd: payload.cwd ?? null,
+      decision: 'deny',
+      reason: errMsg,
+      source: 'qa-inject-failed',
+      remember: false,
+    }).catch((e2) => ctx.logger.warn('audit append failed', { err: (e2 as Error).message }));
+    await ctx.channel
+      .sendNotification(`❌ Inject falhou: ${errMsg}\n\nSua reply foi:\n${reply}`)
+      .catch((e2) => ctx.logger.warn('sendNotification (qa-inject-failed) failed', { err: (e2 as Error).message }));
+  }
 }

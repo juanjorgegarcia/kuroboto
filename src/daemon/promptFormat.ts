@@ -32,6 +32,17 @@ export async function formatNotification(
   return `${header}${intent}\n\n${body}`;
 }
 
+const QA_FOOTER = '❓ Claude tá esperando uma resposta. Toque em Reply pra responder.';
+
+export async function formatQAPrompt(
+  p: NotificationPayload,
+  ctx: PromptFormatContext,
+): Promise<string> {
+  const header = await buildHeader(p.cwd, p.transcript_path, ctx);
+  const intent = await buildIntentLine(p.transcript_path);
+  return `${header}${intent}\n\n${QA_FOOTER}`;
+}
+
 async function buildHeader(
   cwd: string | undefined,
   transcriptPath: string | undefined,
