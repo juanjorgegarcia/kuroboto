@@ -15,7 +15,7 @@ export const DaemonConfig = z.object({
 
 export const InjectConfig = z.object({
   enabled: z.boolean(),
-  strategy: z.enum(['tmux']).optional(),
+  strategy: z.enum(['pty', 'tmux']).default('pty'),
   session: z.string().optional(),
   replyTimeoutMs: z.number().int().min(1000).default(7_200_000),
 });

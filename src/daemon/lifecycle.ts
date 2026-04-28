@@ -20,6 +20,7 @@ import { notifyDesktop, type DesktopNotifyOpts } from '../notify/desktop.js';
 import { createServer, type DaemonContext } from './server.js';
 import { createInjectStrategy } from '../inject/index.js';
 import { validateTmuxAvailable } from '../inject/validate.js';
+import { InjectClients } from './injectClients.js';
 
 export interface RunningDaemon {
   stop(): Promise<void>;
@@ -31,7 +32,10 @@ export async function startDaemon(config: ConfigT): Promise<RunningDaemon> {
 
   await ensureNoExistingDaemon();
 
-  if (config.inject.enabled) {
+  // Tmux validation only applies to the legacy strategy. PTY-strategy clients
+  // self-host their own PTY in `kuroboto claude`, so the daemon needs no
+  // multiplexer to start.
+  if (config.inject.enabled && config.inject.strategy === 'tmux') {
     await validateTmuxAvailable(config.inject.session ?? 'claude');
   }
 
@@ -44,6 +48,7 @@ export async function startDaemon(config: ConfigT): Promise<RunningDaemon> {
   const pendingNotifications = new PendingNotifications();
   const pendingReplies = new PendingReplies();
   const inject = createInjectStrategy(config.inject);
+  const injectClients = new InjectClients();
   const initialMode: Mode = await loadMode();
   const gaming = new GamingState();
   // shell:false so --body markdown passes through verbatim. Node 16+ resolves
@@ -105,6 +110,7 @@ export async function startDaemon(config: ConfigT): Promise<RunningDaemon> {
     pendingNotifications,
     pendingReplies,
     inject,
+    injectClients,
     state,
     logger,
     startedAt: Date.now(),
