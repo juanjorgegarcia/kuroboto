@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterAll, vi } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, afterAll, vi } from 'vitest';
 import request from 'supertest';
 import fsp from 'node:fs/promises';
 import path from 'node:path';
@@ -409,5 +409,115 @@ describe('sleep mode endpoints', () => {
       .delete('/v1/sleeping')
       .set('X-Kuroboto-Token', TEST_TOKEN);
     expect(res.body).toEqual({ ok: true, cancelled: false, reason: 'idle' });
+  });
+});
+
+describe('allowlist match (daemon-side)', () => {
+  let tmpRepo: string;
+
+  beforeEach(async () => {
+    tmpRepo = await fsp.mkdtemp(path.join(os.tmpdir(), 'kuroboto-allowmatch-int-'));
+  });
+  afterEach(async () => {
+    await fsp.rm(tmpRepo, { recursive: true, force: true });
+  });
+
+  async function writeSettings(repo: string, perms: { allow?: string[]; deny?: string[] }): Promise<void> {
+    const dir = path.join(repo, '.claude');
+    await fsp.mkdir(dir, { recursive: true });
+    await fsp.writeFile(path.join(dir, 'settings.local.json'), JSON.stringify({ permissions: perms }));
+  }
+
+  it('allow match short-circuits to allow without Telegram prompt', async () => {
+    const { ctx, channel } = makeContext({ mode: 'away' });
+    await writeSettings(tmpRepo, { allow: ['Bash(echo:*)'] });
+    const res = await request(createServer(ctx))
+      .post('/v1/permission')
+      .set('X-Kuroboto-Token', TEST_TOKEN)
+      .send({
+        hook_event_name: 'PreToolUse',
+        tool_name: 'Bash',
+        tool_input: { command: 'echo hello' },
+        cwd: tmpRepo,
+      });
+    expect(res.body).toEqual({ decision: 'allow', reason: 'allowlist' });
+    expect(channel.sentPrompts.length).toBe(0);
+  });
+
+  it('deny match short-circuits to deny without Telegram prompt', async () => {
+    const { ctx, channel } = makeContext({ mode: 'away' });
+    await writeSettings(tmpRepo, { deny: ['Bash(rm:*)'] });
+    const res = await request(createServer(ctx))
+      .post('/v1/permission')
+      .set('X-Kuroboto-Token', TEST_TOKEN)
+      .send({
+        hook_event_name: 'PreToolUse',
+        tool_name: 'Bash',
+        tool_input: { command: 'rm -rf /' },
+        cwd: tmpRepo,
+      });
+    expect(res.body).toEqual({ decision: 'deny', reason: 'allowlist' });
+    expect(channel.sentPrompts.length).toBe(0);
+  });
+
+  it('deny wins over allow when both match', async () => {
+    const { ctx } = makeContext({ mode: 'away' });
+    await writeSettings(tmpRepo, { allow: ['Bash'], deny: ['Bash(rm:*)'] });
+    const res = await request(createServer(ctx))
+      .post('/v1/permission')
+      .set('X-Kuroboto-Token', TEST_TOKEN)
+      .send({
+        hook_event_name: 'PreToolUse',
+        tool_name: 'Bash',
+        tool_input: { command: 'rm foo' },
+        cwd: tmpRepo,
+      });
+    expect(res.body).toEqual({ decision: 'deny', reason: 'allowlist' });
+  });
+
+  it('no match falls through to Telegram prompt', async () => {
+    const { ctx, channel } = makeContext({ mode: 'away' });
+    await writeSettings(tmpRepo, { allow: ['Bash(npm:*)'] });
+    const pending = request(createServer(ctx))
+      .post('/v1/permission')
+      .set('X-Kuroboto-Token', TEST_TOKEN)
+      .send({
+        hook_event_name: 'PreToolUse',
+        tool_name: 'Bash',
+        tool_input: { command: 'rm foo' },
+        cwd: tmpRepo,
+      })
+      .then((r) => r);
+    await waitFor(() => channel.sentPrompts.length === 1);
+    channel.emitDecision(channel.sentPrompts[0].requestId, { decision: 'deny' });
+    await pending;
+  });
+
+  it('missing cwd falls through to Telegram prompt', async () => {
+    const { ctx, channel } = makeContext({ mode: 'away' });
+    const pending = request(createServer(ctx))
+      .post('/v1/permission')
+      .set('X-Kuroboto-Token', TEST_TOKEN)
+      .send({ hook_event_name: 'PreToolUse', tool_name: 'Bash', tool_input: { command: 'ls' } })
+      .then((r) => r);
+    await waitFor(() => channel.sentPrompts.length === 1);
+    channel.emitDecision(channel.sentPrompts[0].requestId, { decision: 'allow' });
+    await pending;
+  });
+
+  it('here mode bypasses allowlist (returns ask, lets Claude UI decide)', async () => {
+    const { ctx, channel } = makeContext({ mode: 'here' });
+    await writeSettings(tmpRepo, { allow: ['Bash(echo:*)'] });
+    const res = await request(createServer(ctx))
+      .post('/v1/permission')
+      .set('X-Kuroboto-Token', TEST_TOKEN)
+      .send({
+        hook_event_name: 'PreToolUse',
+        tool_name: 'Bash',
+        tool_input: { command: 'echo hello' },
+        cwd: tmpRepo,
+      });
+    expect(res.body).toEqual({ decision: 'ask' });
+    expect(channel.sentPrompts.length).toBe(0);
   });
 });
