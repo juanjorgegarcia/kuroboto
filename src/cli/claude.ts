@@ -9,8 +9,10 @@ export async function claudeCommand(args: string[]): Promise<void> {
     console.log(chalk.dim('[kuroboto] daemon offline, subindo em background…'));
     await startCommand({ detach: true });
   }
-  const cmd = process.platform === 'win32' ? 'claude.cmd' : 'claude';
-  const child = spawn(cmd, args, { stdio: 'inherit', shell: true });
+  // Use bare `claude` and let the shell resolve the right extension via PATHEXT
+  // (claude.exe, claude.cmd, claude.bat, ...). Hard-coding `.cmd` broke installs
+  // that ship `.exe` (e.g. ~/.local/bin/claude.exe).
+  const child = spawn('claude', args, { stdio: 'inherit', shell: true });
   child.on('exit', (code) => process.exit(code ?? 0));
   child.on('error', (e) => {
     console.error(chalk.red(`[kuroboto] failed to spawn claude: ${e.message}`));
