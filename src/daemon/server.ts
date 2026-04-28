@@ -12,7 +12,7 @@ export interface DaemonContext {
   channel: Channel;
   pending: PendingMap;
   pendingNotifications: PendingNotifications;
-  state: { mode: Mode };
+  state: { mode: Mode; gaming: boolean };
   logger: Logger;
   startedAt: number;
 }

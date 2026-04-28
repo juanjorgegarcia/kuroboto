@@ -13,11 +13,27 @@ export function registerRoutes(app: Express, ctx: DaemonContext): void {
       pending: ctx.pending.size(),
       pendingNotifications: ctx.pendingNotifications.size(),
       mode: ctx.state.mode,
+      gaming: ctx.state.gaming,
     });
   });
 
   app.get('/v1/mode', (_req, res) => {
     res.json({ mode: ctx.state.mode });
+  });
+
+  app.get('/v1/gaming', (_req, res) => {
+    res.json({ gaming: ctx.state.gaming });
+  });
+
+  app.put('/v1/gaming', (req: Request, res: Response) => {
+    const on = (req.body ?? {}).on;
+    if (typeof on !== 'boolean') {
+      res.status(400).json({ error: "body must be { on: true | false }" });
+      return;
+    }
+    ctx.state.gaming = on;
+    ctx.logger.info('gaming toggled', { on });
+    res.json({ ok: true, gaming: ctx.state.gaming });
   });
 
   app.put('/v1/mode', (req: Request, res: Response) => {
@@ -70,6 +86,21 @@ export function registerRoutes(app: Express, ctx: DaemonContext): void {
 
   app.post('/v1/permission', async (req: Request, res: Response) => {
     const payload = req.body as PreToolUsePayload;
+    if (ctx.state.gaming) {
+      const decision: Decision = { decision: 'allow', reason: 'gaming' };
+      appendAudit({
+        ts: new Date().toISOString(),
+        requestId: 'gaming',
+        tool: payload.tool_name,
+        cwd: payload.cwd ?? null,
+        decision: 'allow',
+        reason: 'gaming',
+        source: 'gaming',
+        remember: false,
+      }).catch((e) => ctx.logger.warn('audit append failed', { err: (e as Error).message }));
+      res.json(decision);
+      return;
+    }
     const matchers = ctx.config.policy.permissionMatchers;
     const matched = matchers.includes(payload.tool_name);
     if (ctx.state.mode === 'here' || !matched) {

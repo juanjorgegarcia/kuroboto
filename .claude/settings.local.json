@@ -1,0 +1,25 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(git checkout *)",
+      "Bash(npm run *)",
+      "Bash(git add *)",
+      "Bash(git commit -m ' *)",
+      "Bash(git config *)",
+      "Bash(npm test *)",
+      "Bash(mkdir -p /tmp/kbsmoke)",
+      "Bash(node dist/cli/index.js allowlist list /tmp/kbsmoke)",
+      "Bash(mkdir -p /tmp/kbsmoke/.claude)",
+      "Bash(node *)",
+      "Bash(gh auth *)",
+      "Bash(gh repo *)",
+      "Bash(git push *)",
+      "Bash(gh pr *)",
+      "Skill(code-review:code-review)",
+      "Bash(git:*)",
+      "Edit",
+      "Write",
+      "Bash(npm:*)"
+    ]
+  }
+}
