@@ -80,6 +80,7 @@ export async function initCommand(): Promise<void> {
       permissionTimeoutMs: 55_000,
       notifyDelayMs: 60_000,
       permissionMatchers: ['Bash', 'Edit', 'Write'],
+      rememberGranularity: 'tight',
       failOpen: true,
     },
   };
