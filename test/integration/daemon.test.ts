@@ -1,5 +1,8 @@
 import { describe, it, expect, beforeEach, afterAll, vi } from 'vitest';
 import request from 'supertest';
+import fsp from 'node:fs/promises';
+import path from 'node:path';
+import os from 'node:os';
 import { createServer, type DaemonContext } from '../../src/daemon/server.js';
 import { PendingMap } from '../../src/daemon/pending.js';
 import { PendingNotifications } from '../../src/daemon/pendingNotifications.js';
@@ -31,6 +34,7 @@ function makeContext(overrides: Overrides = {}): { ctx: DaemonContext; channel: 
       permissionTimeoutMs: 1_000,
       notifyDelayMs: 60_000,
       permissionMatchers: ['Bash', 'Edit', 'Write'],
+      rememberGranularity: 'tight',
       failOpen: true,
       ...overrides.policy,
     },
@@ -207,5 +211,66 @@ describe('daemon HTTP', () => {
       .set('X-Kuroboto-Token', TEST_TOKEN)
       .send({ hook_event_name: 'PreToolUse', tool_name: 'Bash', tool_input: {} });
     expect(res.body).toEqual({ decision: 'ask', reason: 'channel unavailable' });
+  });
+
+  it('POST /v1/permission envia 4 botões para o channel', async () => {
+    ctx.state.mode = 'away';
+    const app = createServer(ctx);
+    const pending = request(app)
+      .post('/v1/permission')
+      .set('X-Kuroboto-Token', TEST_TOKEN)
+      .send({ hook_event_name: 'PreToolUse', tool_name: 'Bash', tool_input: { command: 'ls' }, cwd: '/x' })
+      .then((r) => r);
+    await waitFor(() => channel.sentPrompts.length === 1);
+    expect(channel.sentPrompts[0].buttons.map((b) => b.action))
+      .toEqual(['allow', 'allow_remember', 'deny', 'deny_note']);
+    channel.emitDecision(channel.sentPrompts[0].requestId, { decision: 'deny' });
+    await pending;
+  });
+
+  it('POST /v1/permission persiste matcher quando decision.remember=true', async () => {
+    const tmpCwd = await fsp.mkdtemp(path.join(os.tmpdir(), 'kuroboto-int-'));
+    try {
+      ctx.state.mode = 'away';
+      const app = createServer(ctx);
+      const pending = request(app)
+        .post('/v1/permission')
+        .set('X-Kuroboto-Token', TEST_TOKEN)
+        .send({
+          hook_event_name: 'PreToolUse',
+          tool_name: 'Bash',
+          tool_input: { command: 'npm install lodash' },
+          cwd: tmpCwd,
+        })
+        .then((r) => r);
+      await waitFor(() => channel.sentPrompts.length === 1);
+      channel.emitDecision(channel.sentPrompts[0].requestId, { decision: 'allow', remember: true });
+      const res = await pending;
+      // hook não deve receber `remember`
+      expect(res.body).toEqual({ decision: 'allow' });
+      const settings = JSON.parse(
+        await fsp.readFile(path.join(tmpCwd, '.claude', 'settings.local.json'), 'utf-8'),
+      );
+      expect(settings.permissions.allow).toContain('Bash(npm install:*)');
+    } finally {
+      await fsp.rm(tmpCwd, { recursive: true, force: true });
+    }
+  });
+
+  it('POST /v1/permission devolve deny + reason vindo do note flow', async () => {
+    ctx.state.mode = 'away';
+    const app = createServer(ctx);
+    const pending = request(app)
+      .post('/v1/permission')
+      .set('X-Kuroboto-Token', TEST_TOKEN)
+      .send({ hook_event_name: 'PreToolUse', tool_name: 'Bash', tool_input: { command: 'rm' }, cwd: '/x' })
+      .then((r) => r);
+    await waitFor(() => channel.sentPrompts.length === 1);
+    channel.emitDecision(channel.sentPrompts[0].requestId, {
+      decision: 'deny',
+      reason: 'não destrua nada',
+    });
+    const res = await pending;
+    expect(res.body).toEqual({ decision: 'deny', reason: 'não destrua nada' });
   });
 });
