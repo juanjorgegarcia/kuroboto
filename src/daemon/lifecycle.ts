@@ -1,4 +1,5 @@
 import fsp from 'node:fs/promises';
+import os from 'node:os';
 import { type Server } from 'node:http';
 import { spawn as nodeSpawn, type SpawnOptions } from 'node:child_process';
 import type { Channel } from '../channels/Channel.js';
@@ -79,6 +80,7 @@ export async function startDaemon(config: ConfigT): Promise<RunningDaemon> {
     state,
     logger,
     startedAt: Date.now(),
+    hostname: os.hostname(),
   };
   const app = createServer(ctx);
   const server: Server = await new Promise((resolve, reject) => {

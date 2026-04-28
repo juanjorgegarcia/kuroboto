@@ -23,7 +23,19 @@ export interface StopPayload {
   stop_hook_active?: boolean;
 }
 
-export type HookPayload = NotificationPayload | PreToolUsePayload | StopPayload;
+export interface UserPromptSubmitPayload {
+  session_id: string;
+  transcript_path?: string;
+  cwd?: string;
+  hook_event_name: 'UserPromptSubmit';
+  prompt?: string;
+}
+
+export type HookPayload =
+  | NotificationPayload
+  | PreToolUsePayload
+  | StopPayload
+  | UserPromptSubmitPayload;
 
 export type Decision =
   | { decision: 'allow'; reason?: string; remember?: boolean }

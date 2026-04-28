@@ -17,6 +17,7 @@ export interface DaemonContext {
   state: { mode: Mode; gaming: GamingState; sleeping: SleepingOrchestrator };
   logger: Logger;
   startedAt: number;
+  hostname: string;
 }
 
 export function createServer(ctx: DaemonContext): Express {

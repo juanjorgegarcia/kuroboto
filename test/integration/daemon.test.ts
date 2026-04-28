@@ -62,6 +62,7 @@ function makeContext(overrides: Overrides = {}): { ctx: DaemonContext; channel: 
     state: { mode: overrides.mode ?? 'here', gaming, sleeping },
     logger: noopLogger,
     startedAt: Date.now(),
+    hostname: 'test-host',
   };
   channel.on('decision', (e) => pending.resolve(e.requestId, e.decision));
   return { ctx, channel };
