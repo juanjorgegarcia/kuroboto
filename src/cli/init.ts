@@ -98,7 +98,7 @@ export async function initCommand(): Promise<void> {
     message: 'Habilitar desktop notifications? (default: sim)',
     initial: true,
   });
-  const desktopEnabled = desktopAns.val !== false;
+  const desktopEnabled = desktopAns.val === true;
 
   const authToken = randomBytes(32).toString('hex');
   const config: ConfigT = {
