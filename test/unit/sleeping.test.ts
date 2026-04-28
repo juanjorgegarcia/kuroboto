@@ -130,6 +130,51 @@ describe('SleepingOrchestrator', () => {
     expect(orch.snapshot().active).toBe(false);
   });
 
+  it('handleChildExit non-zero → notifyDesktop fires with error level + slug', async () => {
+    const { deps, state } = makeDeps();
+    const desktopCalls: Array<{ title: string; body: string; level: string }> = [];
+    deps.notifyDesktop = async (opts) => {
+      desktopCalls.push(opts);
+    };
+    const orch = new SleepingOrchestrator(deps);
+    const session = await orch.start({ repo: '/x', prompt: 'p', workRoot: '/y', maxDurationMs: 60_000 });
+    state.child!.emit('exit', 1, null);
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(desktopCalls).toHaveLength(1);
+    expect(desktopCalls[0].level).toBe('error');
+    expect(desktopCalls[0].body).toContain(session.slug);
+  });
+
+  it('handleTimeout → notifyDesktop fires with error level + timeout body', async () => {
+    const { deps, state } = makeDeps();
+    const desktopCalls: Array<{ title: string; body: string; level: string }> = [];
+    deps.notifyDesktop = async (opts) => {
+      desktopCalls.push(opts);
+    };
+    const orch = new SleepingOrchestrator(deps);
+    const session = await orch.start({ repo: '/x', prompt: 'p', workRoot: '/y', maxDurationMs: 50 });
+    expect(state.child!.killed).toBe(false);
+    vi.advanceTimersByTime(60);
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(desktopCalls).toHaveLength(1);
+    expect(desktopCalls[0].level).toBe('error');
+    expect(desktopCalls[0].title.toLowerCase()).toContain('timeout');
+    expect(desktopCalls[0].body).toContain(session.slug);
+  });
+
+  it('notifyDesktop omitted → child exit failure still notifies via Telegram', async () => {
+    const { deps, state } = makeDeps();
+    // No notifyDesktop wired
+    const orch = new SleepingOrchestrator(deps);
+    await orch.start({ repo: '/x', prompt: 'p', workRoot: '/y', maxDurationMs: 60_000 });
+    state.child!.emit('exit', 1, null);
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(state.notifications.some((n) => n.includes('failed'))).toBe(true);
+  });
+
   it('cancel() kills child, sends cancelled notification, state idle', async () => {
     const { deps, state } = makeDeps();
     const orch = new SleepingOrchestrator(deps);

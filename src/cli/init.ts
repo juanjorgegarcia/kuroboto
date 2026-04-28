@@ -91,6 +91,15 @@ export async function initCommand(): Promise<void> {
     inject = { enabled: true, strategy: 'tmux', session, replyTimeoutMs: 7_200_000 };
   }
 
+  console.log(chalk.cyan('\nDesktop notifications: toast nativa do SO quando o sleep mode termina (sucesso, falha ou timeout).'));
+  const desktopAns = await prompts({
+    type: 'confirm',
+    name: 'val',
+    message: 'Habilitar desktop notifications? (default: sim)',
+    initial: true,
+  });
+  const desktopEnabled = desktopAns.val === true;
+
   const authToken = randomBytes(32).toString('hex');
   const config: ConfigT = {
     channel: { type: 'telegram', token, chatId },
@@ -106,6 +115,7 @@ export async function initCommand(): Promise<void> {
       sleepWorktreeDir: '~/.kuroboto/worktrees',
       failOpen: true,
     },
+    notifications: { desktop: desktopEnabled },
   };
   await saveConfig(config);
   console.log(chalk.green(`✓ config salvo em ${CONFIG_FILE}`));

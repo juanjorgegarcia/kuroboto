@@ -20,6 +20,10 @@ export const InjectConfig = z.object({
   replyTimeoutMs: z.number().int().min(1000).default(7_200_000),
 });
 
+export const NotificationsConfig = z.object({
+  desktop: z.boolean().default(false),
+});
+
 export const PolicyConfig = z.object({
   permissionTimeoutMs: z.number().int().min(1000),
   notifyDelayMs: z.number().int().min(0).default(60_000),
@@ -36,6 +40,7 @@ export const Config = z.object({
   daemon: DaemonConfig,
   inject: InjectConfig,
   policy: PolicyConfig,
+  notifications: NotificationsConfig.default({ desktop: false }),
 });
 
 export type ConfigT = z.infer<typeof Config>;
