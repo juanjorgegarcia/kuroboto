@@ -52,6 +52,18 @@ Possible solutions (pick one or combine):
 
 Recommend **B** as the simplest: opt-in cleanup the user runs when convenient. Promote to spec if it becomes a daily annoyance.
 
+## Morpheus skill — workflow-stage tracking
+
+Complementary to the daemon's `kuroboto sleeping status` (which only shows sleep-mode state). The morpheus skill should also track its own workflow stages across dispatches:
+
+- File: `~/.claude/skills/morpheus/runs.jsonl` (or similar)
+- Each entry: `{ id, slug, repo, plan, dispatchedAt, prUrl?, stage: 'sleeping'|'review-pending'|'merged'|'cancelled' }`
+- Updated on dispatch (write entry), on PR open (set `prUrl`, advance to `review-pending`), on merge (advance to `merged`), on cancel (advance to `cancelled`)
+- New skill subcommand: `morpheus list` — shows all runs in flight
+- Useful when juggling 2+ specs across repos: "what was I waiting on?"
+
+Out of scope of Spec D (which is daemon-side parallelism only). Promote to spec when the parallel sleeps make this annoyance real.
+
 ## Smaller follow-ups (from out-of-scope sections of shipped specs)
 
 - **Cached transcript reads** with `mtime` invalidation. Premature optimization at our scale; revisit if `transcript.ts` reads become a bottleneck.
