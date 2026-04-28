@@ -31,23 +31,36 @@ export function registerRoutes(app: Express, ctx: DaemonContext): void {
     res.json({ ok: true, mode: ctx.state.mode });
   });
 
-  app.post('/v1/heartbeat', (_req, res) => {
+  app.post('/v1/heartbeat', (req: Request, res: Response) => {
     const cancelled = ctx.pendingNotifications.cancelAll();
+    const source = ((req.body ?? {}).source ?? 'unknown') as string;
+    if (cancelled > 0) {
+      ctx.logger.info('heartbeat cancelled pending', { cancelled, source });
+    } else {
+      ctx.logger.debug('heartbeat (no-op)', { source });
+    }
     res.json({ ok: true, cancelled });
   });
 
   app.post('/v1/notify', (req: Request, res: Response) => {
     const payload = req.body as NotificationPayload;
     const delayMs = ctx.state.mode === 'away' ? 0 : ctx.config.policy.notifyDelayMs;
+    ctx.logger.info('notify received', {
+      mode: ctx.state.mode,
+      delayMs,
+      cwd: payload.cwd,
+      hasMessage: typeof payload.message === 'string',
+    });
     if (delayMs <= 0) {
-      ctx.channel.sendNotification(formatNotification(payload)).catch((e) => {
-        ctx.logger.warn('sendNotification failed', { err: (e as Error).message });
-      });
+      ctx.channel.sendNotification(formatNotification(payload))
+        .then(() => ctx.logger.info('notify sent (immediate)'))
+        .catch((e) => ctx.logger.warn('sendNotification failed', { err: (e as Error).message }));
     } else {
       ctx.pendingNotifications.arm(payload, delayMs, (p) => {
-        ctx.channel.sendNotification(formatNotification(p)).catch((e) => {
-          ctx.logger.warn('sendNotification (delayed) failed', { err: (e as Error).message });
-        });
+        ctx.logger.info('notify timer fired, sending');
+        ctx.channel.sendNotification(formatNotification(p))
+          .then(() => ctx.logger.info('notify sent (delayed)'))
+          .catch((e) => ctx.logger.warn('sendNotification (delayed) failed', { err: (e as Error).message }));
       });
     }
     res.json({ ok: true, delayed: delayMs > 0, delayMs });
