@@ -25,6 +25,8 @@ kuroboto claude     # opens Claude Code with daemon running and hooks active
 | `kuroboto stop` | SIGTERM the daemon, drains pending requests |
 | `kuroboto status` | Daemon health, channel state, hooks installed, last activity |
 | `kuroboto claude [...args]` | Ensures daemon is up + hooks installed, then execs `claude` |
+| `kuroboto ohayo` | Morning ritual: tmux session "claude" + daemon + Claude Code, all wired |
+| `kuroboto here` / `kuroboto away` | Toggle presence mode (delayed vs. immediate Telegram pushes) |
 | `kuroboto hook <type>` | Internal — invoked by Claude Code hooks (don't call directly) |
 
 ## Layers
