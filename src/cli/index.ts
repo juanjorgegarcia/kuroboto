@@ -147,11 +147,11 @@ program
 
 const gaming = program.command('gaming').description('Auto-allow all permission prompts (full carta-branca)');
 gaming
-  .command('on')
-  .description('Turn gaming mode on (every PreToolUse → instant allow, no Telegram prompt)')
-  .action(async () => {
+  .command('on [duration]')
+  .description('Turn gaming mode on. Optional duration like `15m`, `2h`, `30s` for auto-off.')
+  .action(async (duration?: string) => {
     try {
-      await gamingOnCommand();
+      await gamingOnCommand(duration);
     } catch (e) {
       console.error(`gaming on failed: ${(e as Error).message}`);
       process.exit(1);
@@ -170,7 +170,7 @@ gaming
   });
 gaming
   .command('status')
-  .description('Show gaming on/off')
+  .description('Show gaming on/off and remaining time if a timer is active')
   .action(async () => {
     try {
       await gamingStatusCommand();
