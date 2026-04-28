@@ -134,7 +134,10 @@ describe('SleepingOrchestrator', () => {
     const { deps, state } = makeDeps();
     const orch = new SleepingOrchestrator(deps);
     await orch.start({ repo: '/x', prompt: 'p', workRoot: '/y', maxDurationMs: 60_000 });
-    await orch.cancel();
+    const cancelPromise = orch.cancel();
+    // FakeChild.kill() uses setImmediate() to emit exit; advance timers to trigger it
+    vi.advanceTimersByTime(0);
+    await cancelPromise;
     expect(state.child!.killed).toBe(true);
     expect(state.notifications.some((n) => n.toLowerCase().includes('cancel'))).toBe(true);
     expect(orch.snapshot().active).toBe(false);

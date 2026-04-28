@@ -140,7 +140,19 @@ export class SleepingOrchestrator {
     if (session.terminated) return false;
     session.terminated = true;
     clearTimeout(session.maxDurationTimer);
-    session.child.kill('SIGTERM');
+    // Race kill with a 5s timeout to avoid hanging on a stuck child
+    await new Promise<void>((resolve) => {
+      let resolved = false;
+      const done = () => {
+        if (!resolved) {
+          resolved = true;
+          resolve();
+        }
+      };
+      session.child.once('exit', done);
+      session.child.kill('SIGTERM');
+      setTimeout(done, 5_000);
+    });
     void this.deps.notify(`\u{1F6D1} sleep cancelled. log: ${session.worktreePath}/.kuroboto-sleep.log`);
     this.restoreGaming(session.gamingPriorSnapshot);
     this.session = null;

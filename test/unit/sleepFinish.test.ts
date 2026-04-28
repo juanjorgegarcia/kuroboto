@@ -17,6 +17,9 @@ function makeDeps(prUrl = 'https://github.com/x/y/pull/42'): { deps: FinishDeps;
   const deps: FinishDeps = {
     exec: vi.fn(async (cmd, args, opts) => {
       calls.exec.push({ cmd, args, cwd: opts?.cwd });
+      if (cmd === 'gh' && args[0] === 'repo' && args[1] === 'view') {
+        return { code: 0, stdout: 'main\n', stderr: '' };
+      }
       if (cmd === 'gh' && args[0] === 'pr' && args[1] === 'create') {
         return { code: 0, stdout: prUrl + '\n', stderr: '' };
       }
@@ -33,9 +36,10 @@ describe('finishSleep', () => {
     await finishSleep(SESSION, deps);
     const cmds = calls.exec.map((c) => `${c.cmd} ${c.args.slice(0, 3).join(' ')}`);
     expect(cmds[0]).toContain('git push');
-    expect(cmds[1]).toContain('gh pr create');
+    expect(cmds[1]).toContain('gh repo view');
+    expect(cmds[2]).toContain('gh pr create');
     // gh runs in the worktree dir
-    expect(calls.exec[1].cwd).toBe(SESSION.worktreePath);
+    expect(calls.exec[2].cwd).toBe(SESSION.worktreePath);
     // notification includes the URL
     expect(calls.notify).toHaveLength(1);
     expect(calls.notify[0]).toContain('https://github.com/x/y/pull/42');
@@ -65,7 +69,7 @@ describe('finishSleep', () => {
   it('PR title comes from the slug (humanised)', async () => {
     const { deps, calls } = makeDeps();
     await finishSleep(SESSION, deps);
-    const ghCall = calls.exec.find((c) => c.cmd === 'gh');
+    const ghCall = calls.exec.find((c) => c.cmd === 'gh' && c.args[0] === 'pr' && c.args[1] === 'create');
     expect(ghCall).toBeDefined();
     const title = ghCall!.args[ghCall!.args.indexOf('--title') + 1];
     expect(title.toLowerCase()).toContain('add feature x');
@@ -74,9 +78,30 @@ describe('finishSleep', () => {
   it('PR body includes the prompt and a sleep-mode origin marker', async () => {
     const { deps, calls } = makeDeps();
     await finishSleep(SESSION, deps);
-    const ghCall = calls.exec.find((c) => c.cmd === 'gh');
+    const ghCall = calls.exec.find((c) => c.cmd === 'gh' && c.args[0] === 'pr' && c.args[1] === 'create');
     const body = ghCall!.args[ghCall!.args.indexOf('--body') + 1];
     expect(body).toContain('add feature x');
     expect(body).toMatch(/sleep mode|kuroboto sleeping|automated/i);
+  });
+
+  it('uses the default branch from gh repo view', async () => {
+    const { deps, calls } = makeDeps();
+    // Override the exec to return 'develop' as default branch
+    deps.exec = vi.fn(async (cmd, args) => {
+      if (cmd === 'gh' && args[0] === 'repo' && args[1] === 'view') {
+        return { code: 0, stdout: 'develop\n', stderr: '' };
+      }
+      if (cmd === 'gh' && args[0] === 'pr' && args[1] === 'create') {
+        calls.exec.push({ cmd, args });
+        return { code: 0, stdout: 'https://x/y/pull/1\n', stderr: '' };
+      }
+      if (cmd === 'git') return { code: 0, stdout: '', stderr: '' };
+      return { code: 0, stdout: '', stderr: '' };
+    });
+    await finishSleep(SESSION, deps);
+    const ghPrCreate = calls.exec.find((c) => c.cmd === 'gh' && c.args[0] === 'pr' && c.args[1] === 'create');
+    expect(ghPrCreate).toBeDefined();
+    const baseIdx = ghPrCreate!.args.indexOf('--base');
+    expect(ghPrCreate!.args[baseIdx + 1]).toBe('develop');
   });
 });
