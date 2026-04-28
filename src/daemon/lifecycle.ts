@@ -35,8 +35,16 @@ export async function startDaemon(config: ConfigT): Promise<RunningDaemon> {
   const pendingNotifications = new PendingNotifications();
   const initialMode: Mode = await loadMode();
   const gaming = new GamingState();
+  // On Windows, gh and claude are .cmd shims. shell:true would fix ENOENT
+  // but breaks arg quoting (cmd.exe mangles --body markdown). Resolve the
+  // .cmd suffix explicitly and keep shell:false so args pass verbatim.
+  const resolveBin = (cmd: string): string => {
+    if (process.platform !== 'win32') return cmd;
+    if (cmd === 'gh' || cmd === 'claude') return `${cmd}.cmd`;
+    return cmd;
+  };
   const claudeSpawn = (cmd: string, args: string[], opts?: SpawnOptions): ReturnType<typeof nodeSpawn> =>
-    nodeSpawn(cmd, args, { ...opts, shell: true });
+    nodeSpawn(resolveBin(cmd), args, { ...opts, shell: false });
   const sleeping = new SleepingOrchestrator({
     spawn: claudeSpawn,
     gaming,
@@ -48,7 +56,7 @@ export async function startDaemon(config: ConfigT): Promise<RunningDaemon> {
       finishSleep(session, {
         exec: async (cmd, args, opts) => {
           return new Promise((resolve) => {
-            const child = nodeSpawn(cmd, args, { cwd: opts?.cwd, shell: true });
+            const child = nodeSpawn(resolveBin(cmd), args, { cwd: opts?.cwd, shell: false });
             let stdout = '';
             let stderr = '';
             child.stdout?.on('data', (b) => (stdout += b.toString()));
