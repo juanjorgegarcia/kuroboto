@@ -1,0 +1,50 @@
+export interface NotificationPayload {
+  session_id: string;
+  transcript_path?: string;
+  cwd?: string;
+  hook_event_name: 'Notification';
+  message?: string;
+}
+
+export interface PreToolUsePayload {
+  session_id: string;
+  transcript_path?: string;
+  cwd?: string;
+  hook_event_name: 'PreToolUse';
+  tool_name: string;
+  tool_input: Record<string, unknown>;
+}
+
+export interface StopPayload {
+  session_id: string;
+  transcript_path?: string;
+  cwd?: string;
+  hook_event_name: 'Stop';
+  stop_hook_active?: boolean;
+}
+
+export type HookPayload = NotificationPayload | PreToolUsePayload | StopPayload;
+
+export type Decision =
+  | { decision: 'allow'; reason?: string }
+  | { decision: 'deny'; reason?: string };
+
+export interface PromptRequest {
+  requestId: string;
+  text: string;
+  buttons: PromptButton[];
+}
+
+export interface PromptButton {
+  label: string;
+  action: 'allow' | 'deny' | 'reply';
+}
+
+export interface DecisionEvent {
+  requestId: string;
+  decision: Decision;
+}
+
+export interface FreeTextEvent {
+  text: string;
+}
