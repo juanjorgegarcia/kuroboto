@@ -1,5 +1,5 @@
 import type { ChildProcess, SpawnOptions } from 'node:child_process';
-import { GamingState } from './gaming.js';
+import { GamingState, type GamingSnapshot } from './gaming.js';
 import { slugify } from './worktree.js';
 
 export type SpawnFn = (cmd: string, args: string[], opts: SpawnOptions) => ChildProcess;
@@ -46,7 +46,7 @@ export type SleepingSnapshot =
 interface InternalSession extends SleepingSession {
   child: ChildProcess;
   maxDurationTimer: NodeJS.Timeout;
-  gamingPriorActive: boolean;
+  gamingPriorSnapshot: GamingSnapshot;
   terminated: boolean;
 }
 
@@ -83,8 +83,8 @@ export class SleepingOrchestrator {
 
     await this.deps.createWorktree(req.repo, branch, worktreePath);
 
-    const gamingPriorActive = this.deps.gaming.snapshot().active;
-    if (!gamingPriorActive) this.deps.gaming.arm();
+    const gamingPriorSnapshot = this.deps.gaming.snapshot();
+    if (!gamingPriorSnapshot.active) this.deps.gaming.arm();
 
     const startedAt = Date.now();
     const expectedEndAt = startedAt + req.maxDurationMs;
@@ -105,7 +105,7 @@ export class SleepingOrchestrator {
       repo: req.repo,
       child,
       maxDurationTimer,
-      gamingPriorActive,
+      gamingPriorSnapshot,
       terminated: false,
     };
     this.session = session;
@@ -142,16 +142,12 @@ export class SleepingOrchestrator {
     clearTimeout(session.maxDurationTimer);
     session.child.kill('SIGTERM');
     void this.deps.notify(`\u{1F6D1} sleep cancelled. log: ${session.worktreePath}/.kuroboto-sleep.log`);
-    this.restoreGaming(session.gamingPriorActive);
+    this.restoreGaming(session.gamingPriorSnapshot);
     this.session = null;
     return true;
   }
 
-  private handleChildExit(
-    session: InternalSession,
-    code: number | null,
-    signal: NodeJS.Signals | null,
-  ): void {
+  private handleChildExit(session: InternalSession, code: number | null, signal: NodeJS.Signals | null): void {
     if (session.terminated) return;
     session.terminated = true;
     clearTimeout(session.maxDurationTimer);
@@ -168,9 +164,10 @@ export class SleepingOrchestrator {
             repo: session.repo,
           });
         } catch (e) {
-          void this.deps.notify(
-            `⚠️ sleep onSuccess hook failed: ${(e as Error).message}`,
-          );
+          void this.deps.notify(`⚠️ sleep onSuccess hook failed: ${(e as Error).message}`);
+        } finally {
+          this.restoreGaming(session.gamingPriorSnapshot);
+          if (this.session === session) this.session = null;
         }
       })();
     } else {
@@ -178,9 +175,9 @@ export class SleepingOrchestrator {
       void this.deps.notify(
         `❌ sleep failed — ${reason}. log: ${session.worktreePath}/.kuroboto-sleep.log`,
       );
+      this.restoreGaming(session.gamingPriorSnapshot);
+      if (this.session === session) this.session = null;
     }
-    this.restoreGaming(session.gamingPriorActive);
-    if (this.session === session) this.session = null;
   }
 
   private handleTimeout(): void {
@@ -191,13 +188,25 @@ export class SleepingOrchestrator {
     void this.deps.notify(
       `⏰ sleep timed out. log: ${session.worktreePath}/.kuroboto-sleep.log. PR not created.`,
     );
-    this.restoreGaming(session.gamingPriorActive);
+    this.restoreGaming(session.gamingPriorSnapshot);
     this.session = null;
   }
 
-  private restoreGaming(priorActive: boolean): void {
-    if (priorActive) {
+  private restoreGaming(prior: GamingSnapshot): void {
+    if (!prior.active) {
+      this.deps.gaming.cancel();
+      return;
+    }
+    if (prior.until === null) {
+      // Was on with no timer — leave on.
       if (!this.deps.gaming.snapshot().active) this.deps.gaming.arm();
+      return;
+    }
+    // Was on with a timer — re-arm with remaining duration.
+    const remainingMs = prior.until - Date.now();
+    if (remainingMs > 0) {
+      this.deps.gaming.cancel();
+      this.deps.gaming.arm(remainingMs);
     } else {
       this.deps.gaming.cancel();
     }
