@@ -1,11 +1,13 @@
 import fsp from 'node:fs/promises';
 import path from 'node:path';
 import os from 'node:os';
+import { randomUUID } from 'node:crypto';
 import type { Express, Request, Response } from 'express';
 import type { DaemonContext } from './server.js';
 import type { PreToolUsePayload, NotificationPayload, Decision } from '../core/types.js';
 import { saveMode, type Mode } from './state.js';
 import { computeAllowMatcher, addProjectAllow } from './allowlist.js';
+import { loadAllowlist, matchAny } from './allowlistMatch.js';
 import { appendAudit } from './audit.js';
 
 export function registerRoutes(app: Express, ctx: DaemonContext): void {
@@ -185,6 +187,44 @@ export function registerRoutes(app: Express, ctx: DaemonContext): void {
       const decision: Decision = { decision: 'ask' };
       res.json(decision);
       return;
+    }
+
+    // Allowlist match — read project's .claude/settings.local.json and short-circuit
+    // if the tool call matches a deny or allow pattern. Deny wins over allow.
+    // loadAllowlist swallows read/parse errors internally and returns empty arrays;
+    // no outer try/catch needed.
+    if (payload.cwd) {
+      const allowlist = await loadAllowlist(payload.cwd);
+      if (matchAny(payload.tool_name, payload.tool_input, allowlist.deny)) {
+        const decision: Decision = { decision: 'deny', reason: 'allowlist' };
+        appendAudit({
+          ts: new Date().toISOString(),
+          requestId: randomUUID(),
+          tool: payload.tool_name,
+          cwd: payload.cwd,
+          decision: 'deny',
+          reason: 'allowlist',
+          source: 'allowlist-deny',
+          remember: false,
+        }).catch((e) => ctx.logger.warn('audit append failed', { err: (e as Error).message }));
+        res.json(decision);
+        return;
+      }
+      if (matchAny(payload.tool_name, payload.tool_input, allowlist.allow)) {
+        const decision: Decision = { decision: 'allow', reason: 'allowlist' };
+        appendAudit({
+          ts: new Date().toISOString(),
+          requestId: randomUUID(),
+          tool: payload.tool_name,
+          cwd: payload.cwd,
+          decision: 'allow',
+          reason: 'allowlist',
+          source: 'allowlist-allow',
+          remember: false,
+        }).catch((e) => ctx.logger.warn('audit append failed', { err: (e as Error).message }));
+        res.json(decision);
+        return;
+      }
     }
 
     const { requestId, promise } = ctx.pending.create(ctx.config.policy.permissionTimeoutMs);
