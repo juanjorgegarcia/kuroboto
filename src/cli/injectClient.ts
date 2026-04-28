@@ -2,7 +2,7 @@ import http from 'node:http';
 import fsp from 'node:fs/promises';
 import fs from 'node:fs';
 import path from 'node:path';
-import os from 'node:os';
+import { spawnSync } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
 import chalk from 'chalk';
 import { loadConfig } from '../config/load.js';
@@ -248,9 +248,74 @@ export async function runInjectClient(opts: ClaudeRunOpts): Promise<RunResult> {
   const cwd = process.cwd();
   const slug = (opts.name && opts.name.trim()) || defaultSlug(cwd);
 
+  // Late-binding to the pty handle so the inject server's onInject closure
+  // can reference it. Created after registration succeeds.
+  let pty: IPty | null = null;
+
+  // Local /inject server up first (we need localPort for register).
+  const server = createInjectServer({
+    authToken: config.daemon.authToken,
+    onInject: (text) => {
+      if (!pty) return; // pre-spawn or post-exit; drop silently
+      // Single literal write + Enter (matches tmux strategy: -l text, then Enter)
+      pty.write(text);
+      pty.write('\r');
+    },
+    serverFactory: opts.serverFactory,
+  });
+  const localPort: number = await new Promise((resolve, reject) => {
+    server.once('error', reject);
+    server.listen(0, '127.0.0.1', () => {
+      const addr = server.address();
+      if (typeof addr === 'object' && addr) resolve(addr.port);
+      else reject(new Error('server.address() returned no port'));
+    });
+  });
+
+  const daemon = makeDaemonClient(config.daemon.port, config.daemon.authToken, opts.fetchImpl);
+  const payload: RegisterPayload = { slug, pid: process.pid, cwd, localPort };
+
+  const tryRegister = async (
+    announce: boolean,
+  ): Promise<{ ok: true } | { ok: false; collision: boolean }> => {
+    const r = await daemon.register(payload);
+    if (r.ok) {
+      if (announce) process.stderr.write(chalk.dim(`[kuroboto] registered as "${slug}"\n`));
+      return { ok: true };
+    }
+    if (r.status === 409) {
+      process.stderr.write(chalk.red(`[kuroboto] slug "${slug}" already in use: ${r.body}\n`));
+      return { ok: false, collision: true };
+    }
+    return { ok: false, collision: false };
+  };
+
+  const initial = await tryRegister(true);
+  if (!initial.ok && initial.collision) {
+    // 409 collision is fatal — abort before spawning claude. Cleanup the server.
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+    return { exitCode: 1 };
+  }
+  if (!initial.ok) {
+    // Non-collision failure (network, daemon offline) — tolerate; sentinel watch retries.
+    const sentinel = await readDaemonSentinel();
+    if (sentinel) {
+      process.stderr.write(
+        chalk.yellow('[kuroboto] register failed, will retry when daemon sentinel changes\n'),
+      );
+    } else {
+      process.stderr.write(
+        chalk.yellow('[kuroboto] daemon offline — Q&A replies will not reach this session until daemon is back\n'),
+      );
+    }
+  }
+
+  // Now spawn claude. Resolve executable upfront so node-pty's spawn (which
+  // does not do PATHEXT lookup on Windows) gets a path it can find.
+  const claudeExe = resolveClaudeExecutable();
   const cols = stdout.columns ?? 80;
   const rows = stdout.rows ?? 24;
-  const pty = ptyMod.spawn('claude', opts.args, {
+  pty = ptyMod.spawn(claudeExe, opts.args, {
     cols,
     rows,
     cwd,
@@ -275,70 +340,19 @@ export async function runInjectClient(opts: ClaudeRunOpts): Promise<RunResult> {
   }
   stdin.resume();
   const onStdinData = (chunk: Buffer | string): void => {
-    pty.write(typeof chunk === 'string' ? chunk : chunk.toString('utf-8'));
+    pty?.write(typeof chunk === 'string' ? chunk : chunk.toString('utf-8'));
   };
   stdin.on('data', onStdinData);
 
   // Resize: stdout 'resize' fires on Node when the parent terminal is resized.
   const onResize = (): void => {
     try {
-      pty.resize(stdout.columns ?? 80, stdout.rows ?? 24);
+      pty?.resize(stdout.columns ?? 80, stdout.rows ?? 24);
     } catch {
       // pty may already be dead
     }
   };
   stdout.on('resize', onResize);
-
-  // Local /inject server
-  const server = createInjectServer({
-    authToken: config.daemon.authToken,
-    onInject: (text) => {
-      // Send as a single literal write + Enter (matches tmux strategy: -l text, then Enter)
-      pty.write(text);
-      pty.write('\r');
-    },
-    serverFactory: opts.serverFactory,
-  });
-  const localPort: number = await new Promise((resolve, reject) => {
-    server.once('error', reject);
-    server.listen(0, '127.0.0.1', () => {
-      const addr = server.address();
-      if (typeof addr === 'object' && addr) resolve(addr.port);
-      else reject(new Error('server.address() returned no port'));
-    });
-  });
-
-  const daemon = makeDaemonClient(config.daemon.port, config.daemon.authToken, opts.fetchImpl);
-  const payload: RegisterPayload = { slug, pid: process.pid, cwd, localPort };
-
-  const tryRegister = async (announce: boolean): Promise<boolean> => {
-    const r = await daemon.register(payload);
-    if (r.ok) {
-      if (announce) process.stderr.write(chalk.dim(`[kuroboto] registered as "${slug}"\n`));
-      return true;
-    }
-    if (r.status === 409) {
-      process.stderr.write(chalk.red(`[kuroboto] slug "${slug}" already in use: ${r.body}\n`));
-      return false;
-    }
-    return false;
-  };
-
-  const initialOk = await tryRegister(true);
-  if (!initialOk) {
-    // 409 is fatal (collision); other failures are tolerated until sentinel changes.
-    const sentinel = await readDaemonSentinel();
-    if (sentinel) {
-      // Daemon up but registration failed for a non-collision reason — keep going.
-      process.stderr.write(
-        chalk.yellow('[kuroboto] register failed, will retry when daemon sentinel changes\n'),
-      );
-    } else {
-      process.stderr.write(
-        chalk.yellow('[kuroboto] daemon offline — Q&A replies will not reach this session until daemon is back\n'),
-      );
-    }
-  }
 
   // Watch the sentinel: on change, re-register (idempotent on the daemon side).
   const watcher = (opts.watchSentinel ?? watchDaemonSentinel)(() => {
@@ -347,7 +361,7 @@ export async function runInjectClient(opts: ClaudeRunOpts): Promise<RunResult> {
 
   // Wait for claude exit
   const exitCode: number = await new Promise<number>((resolve) => {
-    pty.onExit(({ exitCode: code }) => resolve(code));
+    pty!.onExit(({ exitCode: code }) => resolve(code));
   });
 
   // Cleanup
@@ -362,6 +376,29 @@ export async function runInjectClient(opts: ClaudeRunOpts): Promise<RunResult> {
   await daemon.deregister(slug);
 
   return { exitCode };
+}
+
+/**
+ * Resolve the `claude` executable path. On Windows, `node-pty` (via ConPTY +
+ * CreateProcess) does NOT walk PATHEXT, so passing `'claude'` fails with
+ * ENOENT when the install is `claude.cmd` / `claude.bat`. Use `where` to
+ * resolve to the absolute path. On Unix, `claude` works as-is.
+ *
+ * Falls back to `'claude'` on resolution failure — the spawn will then error
+ * with a clear message.
+ */
+function resolveClaudeExecutable(): string {
+  if (process.platform !== 'win32') return 'claude';
+  try {
+    const r = spawnSync('where', ['claude'], { encoding: 'utf-8', windowsHide: true });
+    if (r.status === 0 && r.stdout) {
+      const first = r.stdout.split(/\r?\n/)[0]?.trim();
+      if (first) return first;
+    }
+  } catch {
+    // ignore
+  }
+  return 'claude';
 }
 
 async function loadNodePty(): Promise<NodePtyLike | null> {
@@ -384,8 +421,11 @@ export function installCrashSafety(stdin: NodeJS.ReadStream = process.stdin): vo
     }
   };
   process.once('exit', restore);
-  process.once('SIGINT', restore);
-  process.once('SIGTERM', restore);
+  // SIGINT/SIGTERM: restore terminal + exit with conventional signal code
+  // (130 = 128 + 2 for SIGINT, 143 = 128 + 15 for SIGTERM). This propagates
+  // termination instead of swallowing the signal and orphaning the process.
+  process.once('SIGINT', () => { restore(); process.exit(130); });
+  process.once('SIGTERM', () => { restore(); process.exit(143); });
   process.once('uncaughtException', (e) => {
     restore();
     process.stderr.write(`[kuroboto] uncaught: ${e.stack ?? e.message}\n`);
@@ -393,11 +433,3 @@ export function installCrashSafety(stdin: NodeJS.ReadStream = process.stdin): vo
   });
 }
 
-interface HomedirEnv { HOME?: string; USERPROFILE?: string }
-export function expandHome(p: string, env: HomedirEnv = process.env): string {
-  if (p.startsWith('~/') || p === '~') {
-    const home = env.HOME ?? env.USERPROFILE ?? os.homedir();
-    return path.join(home, p.slice(2));
-  }
-  return p;
-}

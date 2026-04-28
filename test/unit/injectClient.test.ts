@@ -305,12 +305,12 @@ describe('runInjectClient', () => {
     await runP;
   });
 
-  it('exits non-zero on slug collision (409)', async () => {
+  it('exits non-zero on slug collision (409) without spawning claude', async () => {
     const ptyState: { last: FakePty | null } = { last: null };
     const fetchSpy = vi.fn(async () => new Response('PID 999', { status: 409 }));
     const fakeStdin = makeFakeStdin();
     const fakeStdout = makeFakeStdout();
-    const runP = runInjectClient({
+    const r = await runInjectClient({
       args: [],
       name: 'test-cli',
       pty: makeFakePtyMod(ptyState),
@@ -319,12 +319,9 @@ describe('runInjectClient', () => {
       stdout: fakeStdout as unknown as NodeJS.WriteStream,
       watchSentinel: () => ({ close: () => {} }),
     });
-    await new Promise((r) => setTimeout(r, 30));
-    // The CLI does NOT exit hard on 409 in the current design — it warns and
-    // keeps running until claude exits. Verify by ending the PTY.
-    ptyState.last!.emitExit(2);
-    const r = await runP;
-    expect(r.exitCode).toBe(2);
+    expect(r.exitCode).toBe(1);
+    // pty must not be spawned on collision — server is closed before pty.spawn
+    expect(ptyState.last).toBeNull();
   });
 
   it('sentinel watcher fires re-registration', async () => {

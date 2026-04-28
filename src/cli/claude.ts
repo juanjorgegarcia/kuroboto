@@ -43,7 +43,11 @@ export function parseOpts(args: string[]): ClaudeOpts {
       continue;
     }
     if (a === '--name') {
-      name = args[i + 1];
+      const next = args[i + 1];
+      if (next === undefined || next.startsWith('-')) {
+        throw new Error('--name requires a value');
+      }
+      name = next;
       i += 2;
       continue;
     }
