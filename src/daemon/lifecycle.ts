@@ -9,6 +9,7 @@ import { DaemonError } from '../core/errors.js';
 import { PendingMap } from './pending.js';
 import { PendingNotifications } from './pendingNotifications.js';
 import { loadMode, type Mode } from './state.js';
+import { GamingState } from './gaming.js';
 import { createServer, type DaemonContext } from './server.js';
 
 export interface RunningDaemon {
@@ -29,7 +30,7 @@ export async function startDaemon(config: ConfigT): Promise<RunningDaemon> {
   pending.startCleanupLoop();
   const pendingNotifications = new PendingNotifications();
   const initialMode: Mode = await loadMode();
-  const state = { mode: initialMode };
+  const state = { mode: initialMode, gaming: new GamingState() };
 
   channel.on('decision', (event) => {
     const claimed = pending.resolve(event.requestId, event.decision);

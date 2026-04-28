@@ -10,6 +10,7 @@ import { hereCommand, awayCommand } from './mode.js';
 import { ohayoCommand } from './ohayo.js';
 import { allowlistList, allowlistExport } from './allowlist.js';
 import { auditList, auditExport } from './audit.js';
+import { gamingOnCommand, gamingOffCommand, gamingStatusCommand } from './gaming.js';
 
 // Special-case: `kuroboto claude [...args]` forwards everything raw to Claude Code.
 // Commander would otherwise eat global flags like --version / --help before they
@@ -140,6 +141,41 @@ program
       await hookCommand(type);
     } catch (e) {
       process.stderr.write(`[kuroboto] hook ${type} crashed: ${(e as Error).message}\n`);
+      process.exit(1);
+    }
+  });
+
+const gaming = program.command('gaming').description('Auto-allow all permission prompts (full carta-branca)');
+gaming
+  .command('on [duration]')
+  .description('Turn gaming mode on. Optional duration like `15m`, `2h`, `30s` for auto-off.')
+  .action(async (duration?: string) => {
+    try {
+      await gamingOnCommand(duration);
+    } catch (e) {
+      console.error(`gaming on failed: ${(e as Error).message}`);
+      process.exit(1);
+    }
+  });
+gaming
+  .command('off')
+  .description('Turn gaming mode off (back to normal here/away flow)')
+  .action(async () => {
+    try {
+      await gamingOffCommand();
+    } catch (e) {
+      console.error(`gaming off failed: ${(e as Error).message}`);
+      process.exit(1);
+    }
+  });
+gaming
+  .command('status')
+  .description('Show gaming on/off and remaining time if a timer is active')
+  .action(async () => {
+    try {
+      await gamingStatusCommand();
+    } catch (e) {
+      console.error(`gaming status failed: ${(e as Error).message}`);
       process.exit(1);
     }
   });

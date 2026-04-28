@@ -9,6 +9,7 @@ import { PendingNotifications } from '../../src/daemon/pendingNotifications.js';
 import type { ConfigT } from '../../src/config/schema.js';
 import * as stateModule from '../../src/daemon/state.js';
 import type { Mode } from '../../src/daemon/state.js';
+import { GamingState } from '../../src/daemon/gaming.js';
 import { MockChannel, noopLogger } from '../helpers/mockChannel.js';
 
 // Prevent integration tests from mutating ~/.config/kuroboto/state.json on the host.
@@ -35,6 +36,7 @@ function makeContext(overrides: Overrides = {}): { ctx: DaemonContext; channel: 
       notifyDelayMs: 60_000,
       permissionMatchers: ['Bash', 'Edit', 'Write'],
       rememberGranularity: 'tight',
+      gamingAlwaysAsk: [],
       failOpen: true,
       ...overrides.policy,
     },
@@ -46,7 +48,7 @@ function makeContext(overrides: Overrides = {}): { ctx: DaemonContext; channel: 
     channel,
     pending,
     pendingNotifications,
-    state: { mode: overrides.mode ?? 'here' },
+    state: { mode: overrides.mode ?? 'here', gaming: new GamingState() },
     logger: noopLogger,
     startedAt: Date.now(),
   };
@@ -272,5 +274,82 @@ describe('daemon HTTP', () => {
     });
     const res = await pending;
     expect(res.body).toEqual({ decision: 'deny', reason: 'não destrua nada' });
+  });
+
+  it('PUT /v1/gaming { on: true } makes /v1/permission return allow instantly', async () => {
+    const app = createServer(ctx);
+    const r = await request(app)
+      .put('/v1/gaming')
+      .set('X-Kuroboto-Token', TEST_TOKEN)
+      .send({ on: true });
+    expect(r.body).toMatchObject({ ok: true, active: true, until: null });
+
+    const res = await request(app)
+      .post('/v1/permission')
+      .set('X-Kuroboto-Token', TEST_TOKEN)
+      .send({ hook_event_name: 'PreToolUse', tool_name: 'Bash', tool_input: { command: 'ls' }, cwd: '/x' });
+    expect(res.body).toEqual({ decision: 'allow', reason: 'gaming' });
+  });
+
+  it('PUT /v1/gaming { on: true, durationMs } sets `until` and auto-offs', async () => {
+    const app = createServer(ctx);
+    const r = await request(app)
+      .put('/v1/gaming')
+      .set('X-Kuroboto-Token', TEST_TOKEN)
+      .send({ on: true, durationMs: 50 });
+    expect(r.body.active).toBe(true);
+    expect(r.body.until).toBeGreaterThan(Date.now());
+
+    await new Promise((r) => setTimeout(r, 80));
+
+    const status = await request(app).get('/v1/gaming').set('X-Kuroboto-Token', TEST_TOKEN);
+    expect(status.body).toEqual({ active: false, until: null });
+  });
+
+  it('PUT /v1/gaming { on: false } cancels active gaming', async () => {
+    const app = createServer(ctx);
+    ctx.state.gaming.arm(1_000_000);
+    const r = await request(app)
+      .put('/v1/gaming')
+      .set('X-Kuroboto-Token', TEST_TOKEN)
+      .send({ on: false });
+    expect(r.body).toEqual({ ok: true, active: false, until: null });
+  });
+
+  it('PUT /v1/gaming rejects bad body', async () => {
+    const app = createServer(ctx);
+    const r1 = await request(app)
+      .put('/v1/gaming')
+      .set('X-Kuroboto-Token', TEST_TOKEN)
+      .send({ foo: 'bar' });
+    expect(r1.status).toBe(400);
+    const r2 = await request(app)
+      .put('/v1/gaming')
+      .set('X-Kuroboto-Token', TEST_TOKEN)
+      .send({ on: true, durationMs: -5 });
+    expect(r2.status).toBe(400);
+  });
+
+  it('gamingAlwaysAsk: [Bash] keeps Bash going through normal flow even when gaming on', async () => {
+    const { ctx: c, channel: ch } = makeContext({
+      mode: 'away',
+      policy: { gamingAlwaysAsk: ['Bash'] },
+    });
+    c.state.gaming.arm();
+    const app = createServer(c);
+    const pending = request(app)
+      .post('/v1/permission')
+      .set('X-Kuroboto-Token', TEST_TOKEN)
+      .send({ hook_event_name: 'PreToolUse', tool_name: 'Bash', tool_input: { command: 'ls' }, cwd: '/x' })
+      .then((r) => r);
+    await waitFor(() => ch.sentPrompts.length === 1);
+    // Edit, by contrast, would short-circuit:
+    const editRes = await request(app)
+      .post('/v1/permission')
+      .set('X-Kuroboto-Token', TEST_TOKEN)
+      .send({ hook_event_name: 'PreToolUse', tool_name: 'Edit', tool_input: { file_path: '/x' }, cwd: '/x' });
+    expect(editRes.body).toEqual({ decision: 'allow', reason: 'gaming' });
+    ch.emitDecision(ch.sentPrompts[0].requestId, { decision: 'deny' });
+    await pending;
   });
 });

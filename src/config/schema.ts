@@ -24,6 +24,7 @@ export const PolicyConfig = z.object({
   notifyDelayMs: z.number().int().min(0).default(60_000),
   permissionMatchers: z.array(z.string()).default(['Bash', 'Edit', 'Write']),
   rememberGranularity: z.enum(['tight', 'permissive']).default('tight'),
+  gamingAlwaysAsk: z.array(z.string()).default([]),
   failOpen: z.boolean(),
 });
 
