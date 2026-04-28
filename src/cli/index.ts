@@ -7,6 +7,22 @@ import { statusCommand } from './status.js';
 import { hookCommand } from './hook.js';
 import { claudeCommand } from './claude.js';
 import { hereCommand, awayCommand } from './mode.js';
+import { ohayoCommand } from './ohayo.js';
+
+// Special-case: `kuroboto claude [...args]` forwards everything raw to Claude Code.
+// Commander would otherwise eat global flags like --version / --help before they
+// reach the subcommand action.
+const claudeIdx = process.argv.indexOf('claude');
+const claudeShortcut =
+  claudeIdx >= 2 && process.argv.slice(2, claudeIdx).every((a) => !a.startsWith('-'));
+
+if (claudeShortcut) {
+  const forward = process.argv.slice(claudeIdx + 1);
+  claudeCommand(forward).catch((e) => {
+    console.error(`claude wrapper failed: ${(e as Error).message}`);
+    process.exit(1);
+  });
+}
 
 const program = new Command();
 
@@ -65,6 +81,18 @@ program
   });
 
 program
+  .command('ohayo')
+  .description('Morning ritual: tmux session "claude" + daemon + Claude Code, all wired')
+  .action(async () => {
+    try {
+      await ohayoCommand();
+    } catch (e) {
+      console.error(`ohayo failed: ${(e as Error).message}`);
+      process.exit(1);
+    }
+  });
+
+program
   .command('here')
   .description('Switch to "here" mode (notifications delayed; permissions go to Claude UI)')
   .action(async () => {
@@ -114,7 +142,9 @@ program
     }
   });
 
-program.parseAsync(process.argv).catch((e) => {
-  console.error(`fatal: ${(e as Error).message}`);
-  process.exit(1);
-});
+if (!claudeShortcut) {
+  program.parseAsync(process.argv).catch((e) => {
+    console.error(`fatal: ${(e as Error).message}`);
+    process.exit(1);
+  });
+}
