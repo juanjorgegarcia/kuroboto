@@ -2,6 +2,10 @@
 
 Loose collection of feature ideas worth a spec eventually. Not prioritized; promote to `docs/specs/<name>.md` when ready to design properly.
 
+## Deferred: Spec D (parallel sleep sessions)
+
+`docs/specs/parallel-sleeps.md` is fully designed but deferred behind Spec E (PTY injection). Reason: parallel-sleeps is a useful optimization, but Q&A working without tmux unblocks the **actual usage** of kuroboto-when-away. Rebump to active queue after Spec E ships.
+
 ## Telegram supergroup + topics (one topic per session)
 
 > Pinned: planned next, after `prompt-context.md` + `prompt-freetext-qa.md` ship.
@@ -86,11 +90,20 @@ Possible designs:
 
 Recommend **A** — modest complexity, big reliability win. Promote to spec if daemon restarts during sleep happen more than once.
 
+## Multi-claude per CLI process
+
+Spec E (PTY injection) hosts exactly one claude per `kuroboto claude` invocation. To run two claudes the user runs two CLI processes. If a real "single wrapper, multiple claudes" workflow emerges, the CLI would need:
+- Pane management (split / new / focus) — essentially a mini-tmux
+- Per-pane PTY + per-pane HTTP route (or one HTTP server with `?pane=X` param)
+- Some keybinding to switch between panes
+
+YAGNI today — running multiple terminal windows is fine.
+
 ## Smaller follow-ups (from out-of-scope sections of shipped specs)
 
 - **Cached transcript reads** with `mtime` invalidation. Premature optimization at our scale; revisit if `transcript.ts` reads become a bottleneck.
 - **User-named session slugs** via env var override (e.g., `KUROBOTO_SESSION=fix-auth`). Wait until the auto-extracted "first user message" proves insufficient.
 - **Multi-Claude tmux mapping** (`inject.cwdMappings: { cwd → tmux-session }`). Likely obsoleted by supergroup + topics + smarter injection.
-- **PTY-based injection** to drop the tmux dependency for free-text Q&A. Larger lift; tmux works for the current setup.
+- ~~**PTY-based injection** to drop the tmux dependency for free-text Q&A.~~ Promoted to `docs/specs/pty-injection.md` (Spec E).
 - **Configurable `QA_PATTERNS`** via config. Wait until a real second pattern emerges.
 - **Inject for sleep mode** (write to child_process stdin instead of tmux). Sleep is autonomous by design; revisit only if "sleep that occasionally asks the user" becomes a real workflow.
