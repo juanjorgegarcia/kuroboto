@@ -21,6 +21,8 @@ export const InjectConfig = z.object({
 
 export const PolicyConfig = z.object({
   permissionTimeoutMs: z.number().int().min(1000),
+  notifyDelayMs: z.number().int().min(0).default(60_000),
+  permissionMatchers: z.array(z.string()).default(['Bash', 'Edit', 'Write']),
   failOpen: z.boolean(),
 });
 

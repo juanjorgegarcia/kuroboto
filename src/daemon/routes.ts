@@ -1,6 +1,7 @@
 import type { Express, Request, Response } from 'express';
 import type { DaemonContext } from './server.js';
-import type { PreToolUsePayload, NotificationPayload } from '../core/types.js';
+import type { PreToolUsePayload, NotificationPayload, Decision } from '../core/types.js';
+import { saveMode, type Mode } from './state.js';
 
 export function registerRoutes(app: Express, ctx: DaemonContext): void {
   app.get('/v1/health', (_req, res) => {
@@ -8,26 +9,65 @@ export function registerRoutes(app: Express, ctx: DaemonContext): void {
       ok: true,
       uptimeSec: Math.floor((Date.now() - ctx.startedAt) / 1000),
       pending: ctx.pending.size(),
+      pendingNotifications: ctx.pendingNotifications.size(),
+      mode: ctx.state.mode,
     });
+  });
+
+  app.get('/v1/mode', (_req, res) => {
+    res.json({ mode: ctx.state.mode });
+  });
+
+  app.put('/v1/mode', (req: Request, res: Response) => {
+    const mode = (req.body ?? {}).mode;
+    if (mode !== 'here' && mode !== 'away') {
+      res.status(400).json({ error: "mode must be 'here' or 'away'" });
+      return;
+    }
+    ctx.state.mode = mode as Mode;
+    saveMode(mode as Mode).catch((e) => {
+      ctx.logger.warn('saveMode failed', { err: (e as Error).message });
+    });
+    res.json({ ok: true, mode: ctx.state.mode });
+  });
+
+  app.post('/v1/heartbeat', (_req, res) => {
+    const cancelled = ctx.pendingNotifications.cancelAll();
+    res.json({ ok: true, cancelled });
   });
 
   app.post('/v1/notify', (req: Request, res: Response) => {
     const payload = req.body as NotificationPayload;
-    const text = formatNotification(payload);
-    ctx.channel.sendNotification(text).catch((e) => {
-      ctx.logger.warn('sendNotification failed', { err: (e as Error).message });
-    });
-    res.json({ ok: true });
+    const delayMs = ctx.state.mode === 'away' ? 0 : ctx.config.policy.notifyDelayMs;
+    if (delayMs <= 0) {
+      ctx.channel.sendNotification(formatNotification(payload)).catch((e) => {
+        ctx.logger.warn('sendNotification failed', { err: (e as Error).message });
+      });
+    } else {
+      ctx.pendingNotifications.arm(payload, delayMs, (p) => {
+        ctx.channel.sendNotification(formatNotification(p)).catch((e) => {
+          ctx.logger.warn('sendNotification (delayed) failed', { err: (e as Error).message });
+        });
+      });
+    }
+    res.json({ ok: true, delayed: delayMs > 0, delayMs });
   });
 
   app.post('/v1/permission', async (req: Request, res: Response) => {
     const payload = req.body as PreToolUsePayload;
+    const matchers = ctx.config.policy.permissionMatchers;
+    const matched = matchers.includes(payload.tool_name);
+    if (ctx.state.mode === 'here' || !matched) {
+      const decision: Decision = { decision: 'ask' };
+      res.json(decision);
+      return;
+    }
+
     const { requestId, promise } = ctx.pending.create(ctx.config.policy.permissionTimeoutMs);
-    const promptText = formatPermissionPrompt(payload);
     try {
       await ctx.channel.sendPrompt({
         requestId,
-        text: promptText,
+        text: formatPermissionPrompt(payload),
         buttons: [
           { label: '✅ Allow', action: 'allow' },
           { label: '❌ Deny', action: 'deny' },
@@ -35,7 +75,7 @@ export function registerRoutes(app: Express, ctx: DaemonContext): void {
       });
     } catch (e) {
       ctx.logger.error('sendPrompt failed', { err: (e as Error).message });
-      ctx.pending.resolve(requestId, { decision: 'allow', reason: 'channel unavailable' });
+      ctx.pending.resolve(requestId, { decision: 'ask', reason: 'channel unavailable' });
     }
     const decision = await promise;
     res.json(decision);

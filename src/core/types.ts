@@ -27,7 +27,8 @@ export type HookPayload = NotificationPayload | PreToolUsePayload | StopPayload;
 
 export type Decision =
   | { decision: 'allow'; reason?: string }
-  | { decision: 'deny'; reason?: string };
+  | { decision: 'deny'; reason?: string }
+  | { decision: 'ask'; reason?: string };
 
 export interface PromptRequest {
   requestId: string;

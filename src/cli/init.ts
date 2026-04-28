@@ -76,7 +76,12 @@ export async function initCommand(): Promise<void> {
     channel: { type: 'telegram', token, chatId },
     daemon: { port, authToken },
     inject: { enabled: false },
-    policy: { permissionTimeoutMs: 55_000, failOpen: true },
+    policy: {
+      permissionTimeoutMs: 55_000,
+      notifyDelayMs: 60_000,
+      permissionMatchers: ['Bash', 'Edit', 'Write'],
+      failOpen: true,
+    },
   };
   await saveConfig(config);
   console.log(chalk.green(`✓ config salvo em ${CONFIG_FILE}`));
@@ -138,6 +143,8 @@ async function mergeHooks(): Promise<void> {
   const wanted: Array<[string, string]> = [
     ['Notification', 'kuroboto hook notification'],
     ['PreToolUse', 'kuroboto hook pre-tool'],
+    ['PostToolUse', 'kuroboto hook post-tool'],
+    ['UserPromptSubmit', 'kuroboto hook user-prompt-submit'],
     ['Stop', 'kuroboto hook stop'],
   ];
   for (const [event, cmd] of wanted) {

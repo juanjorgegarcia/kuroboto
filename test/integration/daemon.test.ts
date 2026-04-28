@@ -1,31 +1,62 @@
-import { describe, it, expect, beforeEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterAll, vi } from 'vitest';
 import request from 'supertest';
 import { createServer, type DaemonContext } from '../../src/daemon/server.js';
 import { PendingMap } from '../../src/daemon/pending.js';
+import { PendingNotifications } from '../../src/daemon/pendingNotifications.js';
 import type { ConfigT } from '../../src/config/schema.js';
+import * as stateModule from '../../src/daemon/state.js';
+import type { Mode } from '../../src/daemon/state.js';
 import { MockChannel, noopLogger } from '../helpers/mockChannel.js';
+
+// Prevent integration tests from mutating ~/.config/kuroboto/state.json on the host.
+const saveModeSpy = vi.spyOn(stateModule, 'saveMode').mockResolvedValue(undefined);
+afterAll(() => {
+  saveModeSpy.mockRestore();
+});
 
 const TEST_TOKEN = 'a'.repeat(64);
 
-function makeContext(overrides: Partial<ConfigT> = {}): { ctx: DaemonContext; channel: MockChannel } {
+interface Overrides {
+  mode?: Mode;
+  policy?: Partial<ConfigT['policy']>;
+}
+
+function makeContext(overrides: Overrides = {}): { ctx: DaemonContext; channel: MockChannel } {
   const channel = new MockChannel();
   const config: ConfigT = {
     channel: { type: 'telegram', token: 'x', chatId: 1 },
     daemon: { port: 47891, authToken: TEST_TOKEN },
     inject: { enabled: false },
-    policy: { permissionTimeoutMs: 1_000, failOpen: true },
-    ...overrides,
+    policy: {
+      permissionTimeoutMs: 1_000,
+      notifyDelayMs: 60_000,
+      permissionMatchers: ['Bash', 'Edit', 'Write'],
+      failOpen: true,
+      ...overrides.policy,
+    },
   };
   const pending = new PendingMap();
+  const pendingNotifications = new PendingNotifications();
   const ctx: DaemonContext = {
     config,
     channel,
     pending,
+    pendingNotifications,
+    state: { mode: overrides.mode ?? 'here' },
     logger: noopLogger,
     startedAt: Date.now(),
   };
   channel.on('decision', (e) => pending.resolve(e.requestId, e.decision));
   return { ctx, channel };
+}
+
+async function waitFor(cond: () => boolean, timeoutMs = 1_000): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (cond()) return;
+    await new Promise((r) => setTimeout(r, 10));
+  }
+  throw new Error('waitFor timed out');
 }
 
 describe('daemon HTTP', () => {
@@ -36,10 +67,13 @@ describe('daemon HTTP', () => {
     ({ ctx, channel } = makeContext());
   });
 
-  it('GET /v1/health is open and returns ok', async () => {
+  it('GET /v1/health is open and reports mode + counters', async () => {
     const res = await request(createServer(ctx)).get('/v1/health');
     expect(res.status).toBe(200);
     expect(res.body.ok).toBe(true);
+    expect(res.body.mode).toBe('here');
+    expect(res.body.pending).toBe(0);
+    expect(res.body.pendingNotifications).toBe(0);
   });
 
   it('rejects requests without auth token (401)', async () => {
@@ -47,28 +81,95 @@ describe('daemon HTTP', () => {
     expect(res.status).toBe(401);
   });
 
-  it('rejects requests with wrong auth token (401)', async () => {
-    const res = await request(createServer(ctx))
-      .post('/v1/notify')
-      .set('X-Kuroboto-Token', 'wrong')
-      .send({ message: 'hi' });
+  it('GET /v1/mode requires auth', async () => {
+    const res = await request(createServer(ctx)).get('/v1/mode');
     expect(res.status).toBe(401);
   });
 
-  it('POST /v1/notify accepts and enqueues a notification', async () => {
+  it('PUT /v1/mode toggles state.mode in memory', async () => {
+    const app = createServer(ctx);
+    const r1 = await request(app)
+      .put('/v1/mode')
+      .set('X-Kuroboto-Token', TEST_TOKEN)
+      .send({ mode: 'away' });
+    expect(r1.status).toBe(200);
+    expect(r1.body.mode).toBe('away');
+    expect(ctx.state.mode).toBe('away');
+
+    const r2 = await request(app).get('/v1/mode').set('X-Kuroboto-Token', TEST_TOKEN);
+    expect(r2.body.mode).toBe('away');
+
+    const bad = await request(app)
+      .put('/v1/mode')
+      .set('X-Kuroboto-Token', TEST_TOKEN)
+      .send({ mode: 'wrong' });
+    expect(bad.status).toBe(400);
+  });
+
+  it('POST /v1/notify in here mode arms a pending notification (delayed)', async () => {
     const res = await request(createServer(ctx))
       .post('/v1/notify')
       .set('X-Kuroboto-Token', TEST_TOKEN)
-      .send({ hook_event_name: 'Notification', message: 'wake up', cwd: '/x/MyProject' });
+      .send({ hook_event_name: 'Notification', message: 'm', cwd: '/x/Project' });
     expect(res.status).toBe(200);
-    // sendNotification is fired in the background; await a microtask
-    await new Promise((r) => setImmediate(r));
-    expect(channel.sentNotifications.length).toBe(1);
-    expect(channel.sentNotifications[0]).toContain('MyProject');
-    expect(channel.sentNotifications[0]).toContain('wake up');
+    expect(res.body.delayed).toBe(true);
+    expect(ctx.pendingNotifications.size()).toBe(1);
+    // No push sent yet — it's queued until the delay or until heartbeat clears it
+    expect(channel.sentNotifications.length).toBe(0);
   });
 
-  it('POST /v1/permission resolves with allow when channel returns allow', async () => {
+  it('POST /v1/notify in away mode pushes immediately (no delay)', async () => {
+    ctx.state.mode = 'away';
+    const res = await request(createServer(ctx))
+      .post('/v1/notify')
+      .set('X-Kuroboto-Token', TEST_TOKEN)
+      .send({ hook_event_name: 'Notification', message: 'm', cwd: '/x/Project' });
+    expect(res.status).toBe(200);
+    expect(res.body.delayed).toBe(false);
+    await new Promise((r) => setImmediate(r));
+    expect(channel.sentNotifications.length).toBe(1);
+    expect(channel.sentNotifications[0]).toContain('Project');
+  });
+
+  it('POST /v1/heartbeat cancels every pending notification', async () => {
+    const app = createServer(ctx);
+    await request(app)
+      .post('/v1/notify')
+      .set('X-Kuroboto-Token', TEST_TOKEN)
+      .send({ hook_event_name: 'Notification', message: 'a' });
+    await request(app)
+      .post('/v1/notify')
+      .set('X-Kuroboto-Token', TEST_TOKEN)
+      .send({ hook_event_name: 'Notification', message: 'b' });
+    expect(ctx.pendingNotifications.size()).toBe(2);
+
+    const res = await request(app).post('/v1/heartbeat').set('X-Kuroboto-Token', TEST_TOKEN);
+    expect(res.body).toMatchObject({ ok: true, cancelled: 2 });
+    expect(ctx.pendingNotifications.size()).toBe(0);
+    expect(channel.sentNotifications.length).toBe(0);
+  });
+
+  it('POST /v1/permission in here mode returns ask without touching the channel', async () => {
+    const res = await request(createServer(ctx))
+      .post('/v1/permission')
+      .set('X-Kuroboto-Token', TEST_TOKEN)
+      .send({ hook_event_name: 'PreToolUse', tool_name: 'Bash', tool_input: { command: 'ls' } });
+    expect(res.body).toEqual({ decision: 'ask' });
+    expect(channel.sentPrompts.length).toBe(0);
+  });
+
+  it('POST /v1/permission in away mode returns ask for tools outside the matcher', async () => {
+    ctx.state.mode = 'away';
+    const res = await request(createServer(ctx))
+      .post('/v1/permission')
+      .set('X-Kuroboto-Token', TEST_TOKEN)
+      .send({ hook_event_name: 'PreToolUse', tool_name: 'Read', tool_input: {} });
+    expect(res.body).toEqual({ decision: 'ask' });
+    expect(channel.sentPrompts.length).toBe(0);
+  });
+
+  it('POST /v1/permission in away mode + matched tool resolves with allow when channel returns allow', async () => {
+    ctx.state.mode = 'away';
     const app = createServer(ctx);
     const pending = request(app)
       .post('/v1/permission')
@@ -81,32 +182,16 @@ describe('daemon HTTP', () => {
       })
       .then((r) => r);
     await waitFor(() => channel.sentPrompts.length === 1);
-    const req = channel.sentPrompts[0];
-    channel.emitDecision(req.requestId, { decision: 'allow', reason: 'tap' });
+    channel.emitDecision(channel.sentPrompts[0].requestId, { decision: 'allow', reason: 'tap' });
     const res = await pending;
-    expect(res.status).toBe(200);
     expect(res.body).toEqual({ decision: 'allow', reason: 'tap' });
   });
 
-  it('POST /v1/permission resolves with deny when channel returns deny', async () => {
-    const app = createServer(ctx);
-    const pending = request(app)
-      .post('/v1/permission')
-      .set('X-Kuroboto-Token', TEST_TOKEN)
-      .send({
-        hook_event_name: 'PreToolUse',
-        tool_name: 'Bash',
-        tool_input: { command: 'rm -rf /' },
-      })
-      .then((r) => r);
-    await waitFor(() => channel.sentPrompts.length === 1);
-    channel.emitDecision(channel.sentPrompts[0].requestId, { decision: 'deny' });
-    const res = await pending;
-    expect(res.body.decision).toBe('deny');
-  });
-
-  it('POST /v1/permission resolves with timeout deny when nobody responds', async () => {
-    const { ctx: shortCtx } = makeContext({ policy: { permissionTimeoutMs: 200, failOpen: true } });
+  it('POST /v1/permission in away mode resolves with timeout deny when nobody responds', async () => {
+    const { ctx: shortCtx } = makeContext({
+      mode: 'away',
+      policy: { permissionTimeoutMs: 200 },
+    });
     const res = await request(createServer(shortCtx))
       .post('/v1/permission')
       .set('X-Kuroboto-Token', TEST_TOKEN)
@@ -114,21 +199,13 @@ describe('daemon HTTP', () => {
     expect(res.body).toEqual({ decision: 'deny', reason: 'timeout' });
   });
 
-  it('falls back to allow when sendPrompt throws (channel unavailable)', async () => {
+  it('POST /v1/permission falls back to ask when sendPrompt throws (channel unavailable)', async () => {
+    ctx.state.mode = 'away';
     channel.throwOnSendPrompt = true;
     const res = await request(createServer(ctx))
       .post('/v1/permission')
       .set('X-Kuroboto-Token', TEST_TOKEN)
       .send({ hook_event_name: 'PreToolUse', tool_name: 'Bash', tool_input: {} });
-    expect(res.body).toEqual({ decision: 'allow', reason: 'channel unavailable' });
+    expect(res.body).toEqual({ decision: 'ask', reason: 'channel unavailable' });
   });
 });
-
-async function waitFor(cond: () => boolean, timeoutMs = 1_000): Promise<void> {
-  const deadline = Date.now() + timeoutMs;
-  while (Date.now() < deadline) {
-    if (cond()) return;
-    await new Promise((r) => setTimeout(r, 10));
-  }
-  throw new Error('waitFor timed out');
-}

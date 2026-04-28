@@ -25,6 +25,8 @@ export interface HealthData {
   ok: boolean;
   uptimeSec: number;
   pending: number;
+  pendingNotifications?: number;
+  mode?: 'here' | 'away';
 }
 
 export type HealthResult =

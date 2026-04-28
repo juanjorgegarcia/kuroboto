@@ -6,6 +6,7 @@ import { stopCommand } from './stop.js';
 import { statusCommand } from './status.js';
 import { hookCommand } from './hook.js';
 import { claudeCommand } from './claude.js';
+import { hereCommand, awayCommand } from './mode.js';
 
 const program = new Command();
 
@@ -59,6 +60,30 @@ program
       await statusCommand();
     } catch (e) {
       console.error(`status failed: ${(e as Error).message}`);
+      process.exit(1);
+    }
+  });
+
+program
+  .command('here')
+  .description('Switch to "here" mode (notifications delayed; permissions go to Claude UI)')
+  .action(async () => {
+    try {
+      await hereCommand();
+    } catch (e) {
+      console.error(`here failed: ${(e as Error).message}`);
+      process.exit(1);
+    }
+  });
+
+program
+  .command('away')
+  .description('Switch to "away" mode (notifications immediate; permissions go to Telegram)')
+  .action(async () => {
+    try {
+      await awayCommand();
+    } catch (e) {
+      console.error(`away failed: ${(e as Error).message}`);
       process.exit(1);
     }
   });

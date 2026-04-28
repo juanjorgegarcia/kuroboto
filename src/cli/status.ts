@@ -4,6 +4,7 @@ import os from 'node:os';
 import chalk from 'chalk';
 import { readPid, isProcessAlive, checkHealth } from './util.js';
 import { CONFIG_FILE } from '../config/paths.js';
+import { loadMode } from '../daemon/state.js';
 
 export async function statusCommand(): Promise<void> {
   console.log(chalk.bold('kuroboto status'));
@@ -20,6 +21,9 @@ export async function statusCommand(): Promise<void> {
   } else {
     console.log(`  health: ${chalk.red('unreachable')} ${chalk.dim(health.error)}`);
   }
+
+  const mode = await loadMode();
+  console.log(`  mode: ${chalk.cyan(mode)}`);
 
   const settingsPath = path.join(os.homedir(), '.claude', 'settings.json');
   const installed = await detectInstalledHooks(settingsPath);
