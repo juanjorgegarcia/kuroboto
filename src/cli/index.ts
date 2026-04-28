@@ -122,9 +122,9 @@ program
 
 program
   .command('claude')
-  .description('Open Claude Code with daemon ensured up and hooks active')
+  .description('Open Claude Code inside a PTY (default) or a tmux session (--tmux)')
   .allowUnknownOption(true)
-  .argument('[args...]', 'Arguments forwarded to claude')
+  .argument('[args...]', 'kuroboto flags ([--tmux] [--name <slug>]) followed by claude args')
   .action(async (args: string[]) => {
     try {
       await claudeCommand(args ?? []);
