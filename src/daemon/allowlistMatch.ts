@@ -41,7 +41,9 @@ function matchFilePath(filePath: string, inner: string): boolean {
   // absolute paths we leave them as-is (drive letter prefix).
   const normalized = inner.startsWith('//') ? inner.slice(1) : inner;
   if (filePath === inner || filePath === normalized) return true;
-  return minimatch(filePath, normalized);
+  // dot:true so deny patterns like Edit(/home/user/**) cover hidden files
+  // (.bashrc, .ssh/**) — Claude Code's glob behavior matches dotfiles too.
+  return minimatch(filePath, normalized, { dot: true });
 }
 
 export function matchPattern(toolName: string, toolInput: Record<string, unknown>, pattern: string): boolean {

@@ -61,6 +61,10 @@ describe('matchPattern', () => {
     it('Write glob match', () => {
       expect(matchPattern('Write', { file_path: '/log/a.txt' }, 'Write(/log/**)')).toBe(true);
     });
+    it('** matches dotfiles (deny rule covers hidden files)', () => {
+      expect(matchPattern('Edit', { file_path: '/home/user/.bashrc' }, 'Edit(/home/user/**)')).toBe(true);
+      expect(matchPattern('Read', { file_path: '/etc/.secret/config' }, 'Read(//etc/**)')).toBe(true);
+    });
   });
 
   describe('falls through (out of scope grammar)', () => {
