@@ -16,6 +16,7 @@ import { GamingState } from './gaming.js';
 import { SleepingOrchestrator } from './sleeping.js';
 import { createWorktree, removeWorktree } from './worktree.js';
 import { finishSleep } from './sleepFinish.js';
+import { notifyDesktop, type DesktopNotifyOpts } from '../notify/desktop.js';
 import { createServer, type DaemonContext } from './server.js';
 import { createInjectStrategy } from '../inject/index.js';
 import { validateTmuxAvailable } from '../inject/validate.js';
@@ -50,6 +51,13 @@ export async function startDaemon(config: ConfigT): Promise<RunningDaemon> {
   // to suffix manually.
   const claudeSpawn = (cmd: string, args: string[], opts?: SpawnOptions): ReturnType<typeof nodeSpawn> =>
     nodeSpawn(cmd, args, { ...opts, shell: false });
+  const desktopNotifyDep: ((opts: DesktopNotifyOpts) => Promise<void>) | undefined =
+    config.notifications.desktop
+      ? (opts) =>
+          notifyDesktop(opts, {
+            log: (msg, fields) => logger.debug(msg, fields),
+          })
+      : undefined;
   const sleeping = new SleepingOrchestrator({
     spawn: claudeSpawn,
     gaming,
@@ -57,6 +65,7 @@ export async function startDaemon(config: ConfigT): Promise<RunningDaemon> {
     audit: async () => {}, // skip audit at daemon level; sleep events go to Telegram
     createWorktree,
     removeWorktree,
+    notifyDesktop: desktopNotifyDep,
     onSuccess: (session) =>
       finishSleep(session, {
         exec: async (cmd, args, opts) => {
@@ -70,6 +79,7 @@ export async function startDaemon(config: ConfigT): Promise<RunningDaemon> {
           });
         },
         notify: (msg) => channel.sendNotification(msg),
+        notifyDesktop: desktopNotifyDep,
       }),
   });
   const state = { mode: initialMode, gaming, sleeping };

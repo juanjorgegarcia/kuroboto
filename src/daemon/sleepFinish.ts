@@ -1,4 +1,5 @@
 import type { SleepingSession } from './sleeping.js';
+import type { DesktopNotifyOpts } from '../notify/desktop.js';
 
 export interface ExecResult {
   code: number;
@@ -15,6 +16,7 @@ export type ExecFn = (
 export interface FinishDeps {
   exec: ExecFn;
   notify: (msg: string) => Promise<void>;
+  notifyDesktop?: (opts: DesktopNotifyOpts) => Promise<void>;
 }
 
 function humanise(slug: string): string {
@@ -53,6 +55,13 @@ export async function finishSleep(session: SleepingSession, deps: FinishDeps): P
       `❌ sleep finalize failed — push failed: ${push.stderr.trim() || 'unknown'}. ` +
         `worktree: ${session.worktreePath}`,
     );
+    if (deps.notifyDesktop) {
+      await deps.notifyDesktop({
+        title: 'kuroboto: sleep error',
+        body: `${session.slug}: push failed`,
+        level: 'error',
+      });
+    }
     return;
   }
 
@@ -79,6 +88,13 @@ export async function finishSleep(session: SleepingSession, deps: FinishDeps): P
       `❌ sleep finalize failed — pr create failed: ${create.stderr.trim() || 'unknown'}. ` +
         `worktree: ${session.worktreePath}`,
     );
+    if (deps.notifyDesktop) {
+      await deps.notifyDesktop({
+        title: 'kuroboto: sleep error',
+        body: `${session.slug}: PR create failed`,
+        level: 'error',
+      });
+    }
     return;
   }
 
@@ -86,4 +102,11 @@ export async function finishSleep(session: SleepingSession, deps: FinishDeps): P
   await deps.notify(
     `✅ sleep done — PR: ${url}\n\nTest plan in the PR body. Worktree: ${session.worktreePath}`,
   );
+  if (deps.notifyDesktop) {
+    await deps.notifyDesktop({
+      title: 'kuroboto: sleep done',
+      body: `${session.slug} → ${url}`,
+      level: 'success',
+    });
+  }
 }

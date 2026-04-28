@@ -1,6 +1,7 @@
 import type { ChildProcess, SpawnOptions } from 'node:child_process';
 import { GamingState, type GamingSnapshot } from './gaming.js';
 import { slugify } from './worktree.js';
+import type { DesktopNotifyOpts } from '../notify/desktop.js';
 
 export type SpawnFn = (cmd: string, args: string[], opts: SpawnOptions) => ChildProcess;
 
@@ -12,6 +13,7 @@ export interface SleepingDeps {
   createWorktree: (repo: string, branch: string, dir: string) => Promise<void>;
   removeWorktree: (repo: string, dir: string) => Promise<void>;
   onSuccess: (session: SleepingSession) => Promise<void>;
+  notifyDesktop?: (opts: DesktopNotifyOpts) => Promise<void>;
 }
 
 export interface SleepingStartRequest {
@@ -187,6 +189,13 @@ export class SleepingOrchestrator {
       void this.deps.notify(
         `❌ sleep failed — ${reason}. log: ${session.worktreePath}/.kuroboto-sleep.log`,
       );
+      if (this.deps.notifyDesktop) {
+        void this.deps.notifyDesktop({
+          title: 'kuroboto: sleep error',
+          body: `${session.slug}: ${reason}`,
+          level: 'error',
+        });
+      }
       this.restoreGaming(session.gamingPriorSnapshot);
       if (this.session === session) this.session = null;
     }
@@ -200,6 +209,13 @@ export class SleepingOrchestrator {
     void this.deps.notify(
       `⏰ sleep timed out. log: ${session.worktreePath}/.kuroboto-sleep.log. PR not created.`,
     );
+    if (this.deps.notifyDesktop) {
+      void this.deps.notifyDesktop({
+        title: 'kuroboto: sleep timeout',
+        body: `${session.slug}: ran past max duration; no PR`,
+        level: 'error',
+      });
+    }
     this.restoreGaming(session.gamingPriorSnapshot);
     this.session = null;
   }
