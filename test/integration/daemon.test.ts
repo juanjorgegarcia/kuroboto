@@ -522,3 +522,84 @@ describe('allowlist match (daemon-side)', () => {
     expect(channel.sentPrompts.length).toBe(0);
   });
 });
+
+describe('prompt context header (session + intent)', () => {
+  let tmpDir: string;
+
+  beforeEach(async () => {
+    tmpDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'kuroboto-promptctx-'));
+  });
+  afterEach(async () => {
+    await fsp.rm(tmpDir, { recursive: true, force: true });
+  });
+
+  async function writeTranscript(name: string, lines: unknown[]): Promise<string> {
+    const file = path.join(tmpDir, name);
+    await fsp.writeFile(file, lines.map((l) => JSON.stringify(l)).join('\n'));
+    return file;
+  }
+
+  it('interactive: prompt header has hostname / folder / first user msg + 💭 intent', async () => {
+    const transcript = await writeTranscript('t.jsonl', [
+      { role: 'user', content: 'fix the bot UX' },
+      { role: 'assistant', content: "I'll start by reading the routes file" },
+    ]);
+    const { ctx, channel } = makeContext({ mode: 'away' });
+    const app = createServer(ctx);
+    const pending = request(app)
+      .post('/v1/permission')
+      .set('X-Kuroboto-Token', TEST_TOKEN)
+      .send({
+        hook_event_name: 'PreToolUse',
+        tool_name: 'Bash',
+        tool_input: { command: 'cat src/daemon/routes.ts' },
+        cwd: '/x/kuroboto',
+        transcript_path: transcript,
+      })
+      .then((r) => r);
+    await waitFor(() => channel.sentPrompts.length === 1);
+    const text = channel.sentPrompts[0].text;
+    expect(text).toContain('[test-host / kuroboto / "fix the bot UX"]');
+    expect(text).toContain("💭 I'll start by reading the routes file");
+    expect(text).toContain('Pode rodar?');
+    expect(text).toContain('Bash: cat src/daemon/routes.ts');
+    channel.emitDecision(channel.sentPrompts[0].requestId, { decision: 'allow' });
+    await pending;
+  });
+
+  it('sleep mode: prompt header uses 💤 slug-without-suffix and skips first-user-msg', async () => {
+    const transcript = await writeTranscript('s.jsonl', [
+      { role: 'user', content: 'PLAN_INTRO boilerplate that should not surface' },
+      { role: 'assistant', content: 'Working on step 1' },
+    ]);
+    const { ctx, channel } = makeContext({ mode: 'away' });
+    const worktreePath = path.join(tmpDir, 'work', 'fix-the-bot-ux-abc123');
+    vi.spyOn(ctx.state.sleeping, 'snapshot').mockReturnValue({
+      active: true,
+      slug: 'fix-the-bot-ux-abc123',
+      branch: 'sleep/fix-the-bot-ux-abc123',
+      worktreePath,
+      startedAt: Date.now(),
+      expectedEndAt: Date.now() + 60_000,
+    });
+    const app = createServer(ctx);
+    const pending = request(app)
+      .post('/v1/permission')
+      .set('X-Kuroboto-Token', TEST_TOKEN)
+      .send({
+        hook_event_name: 'PreToolUse',
+        tool_name: 'Bash',
+        tool_input: { command: 'ls' },
+        cwd: worktreePath,
+        transcript_path: transcript,
+      })
+      .then((r) => r);
+    await waitFor(() => channel.sentPrompts.length === 1);
+    const text = channel.sentPrompts[0].text;
+    expect(text).toContain('[test-host / 💤 fix-the-bot-ux]');
+    expect(text).not.toContain('PLAN_INTRO');
+    expect(text).toContain('💭 Working on step 1');
+    channel.emitDecision(channel.sentPrompts[0].requestId, { decision: 'allow' });
+    await pending;
+  });
+});
