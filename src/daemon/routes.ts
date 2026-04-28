@@ -31,7 +31,7 @@ export function registerRoutes(app: Express, ctx: DaemonContext): void {
       res.status(400).json({ error: "body must be { on: true | false }" });
       return;
     }
-    ctx.state.gaming = on;
+    ctx.state.gaming = { active: on, until: null };
     ctx.logger.info('gaming toggled', { on });
     res.json({ ok: true, gaming: ctx.state.gaming });
   });
@@ -86,7 +86,7 @@ export function registerRoutes(app: Express, ctx: DaemonContext): void {
 
   app.post('/v1/permission', async (req: Request, res: Response) => {
     const payload = req.body as PreToolUsePayload;
-    if (ctx.state.gaming) {
+    if (ctx.state.gaming.active) {
       const decision: Decision = { decision: 'allow', reason: 'gaming' };
       appendAudit({
         ts: new Date().toISOString(),

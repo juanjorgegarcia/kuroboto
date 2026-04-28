@@ -29,7 +29,7 @@ export async function startDaemon(config: ConfigT): Promise<RunningDaemon> {
   pending.startCleanupLoop();
   const pendingNotifications = new PendingNotifications();
   const initialMode: Mode = await loadMode();
-  const state = { mode: initialMode, gaming: false };
+  const state = { mode: initialMode, gaming: { active: false, until: null as number | null } };
 
   channel.on('decision', (event) => {
     const claimed = pending.resolve(event.requestId, event.decision);

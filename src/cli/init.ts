@@ -81,6 +81,7 @@ export async function initCommand(): Promise<void> {
       notifyDelayMs: 60_000,
       permissionMatchers: ['Bash', 'Edit', 'Write'],
       rememberGranularity: 'tight',
+      gamingAlwaysAsk: [],
       failOpen: true,
     },
   };
