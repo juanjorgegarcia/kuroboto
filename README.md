@@ -2,7 +2,7 @@
 
 Respond to Claude Code prompts from your phone via chat (Telegram first).
 
-**Status:** v0.1 in development. See [design spec](../PoeAltCrafter/docs/superpowers/specs/2026-04-27-kuroboto-design.md) for the full architecture.
+**Status:** v0.1 in development. See [design spec](docs/design.md) for the full architecture (including the v0.2 redesign in §12).
 
 ## Quickstart (post-build)
 
