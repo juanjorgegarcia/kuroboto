@@ -6,7 +6,7 @@ import type { Channel } from '../channels/Channel.js';
 import type { ConfigT } from '../config/schema.js';
 import { TelegramChannel } from '../channels/telegram/TelegramChannel.js';
 import { createLogger, type Logger } from '../core/logger.js';
-import { CONFIG_DIR, LOG_DIR, PID_FILE } from '../config/paths.js';
+import { CONFIG_DIR, LOG_DIR, PID_FILE, DAEMON_SENTINEL_FILE } from '../config/paths.js';
 import { DaemonError } from '../core/errors.js';
 import { PendingMap } from './pending.js';
 import { PendingNotifications } from './pendingNotifications.js';
@@ -117,6 +117,17 @@ export async function startDaemon(config: ConfigT): Promise<RunningDaemon> {
   });
 
   await fsp.writeFile(PID_FILE, String(process.pid));
+  // Sentinel for `kuroboto claude` CLI processes: lets them find the daemon
+  // port and re-register themselves on daemon restart via fs.watch.
+  try {
+    await fsp.writeFile(
+      DAEMON_SENTINEL_FILE,
+      JSON.stringify({ pid: process.pid, port: config.daemon.port, startedAt: new Date().toISOString() }),
+      { mode: 0o600 },
+    );
+  } catch (e) {
+    logger.warn('daemon sentinel write failed', { err: (e as Error).message });
+  }
   logger.info('daemon ready', { pid: process.pid });
 
   let stopped = false;
@@ -138,6 +149,11 @@ export async function startDaemon(config: ConfigT): Promise<RunningDaemon> {
     await channel.stop();
     try {
       await fsp.unlink(PID_FILE);
+    } catch {
+      // best-effort
+    }
+    try {
+      await fsp.unlink(DAEMON_SENTINEL_FILE);
     } catch {
       // best-effort
     }
