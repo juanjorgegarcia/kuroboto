@@ -617,3 +617,205 @@ describe('prompt context header (session + intent)', () => {
     await pending;
   });
 });
+
+describe('Q&A flow (tmux inject)', () => {
+  let tmpDir: string;
+
+  beforeEach(async () => {
+    tmpDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'kuroboto-qa-'));
+  });
+  afterEach(async () => {
+    await fsp.rm(tmpDir, { recursive: true, force: true });
+  });
+
+  async function writeTranscript(name: string, lines: unknown[]): Promise<string> {
+    const file = path.join(tmpDir, name);
+    await fsp.writeFile(file, lines.map((l) => JSON.stringify(l)).join('\n'));
+    return file;
+  }
+
+  function makeFakeInject(): { strategy: { inject: (t: string) => Promise<void> }; calls: string[]; failNext: { err: Error | null } } {
+    const calls: string[] = [];
+    const failNext = { err: null as Error | null };
+    return {
+      calls,
+      failNext,
+      strategy: {
+        inject: async (text: string) => {
+          calls.push(text);
+          if (failNext.err) {
+            const e = failNext.err;
+            failNext.err = null;
+            throw e;
+          }
+        },
+      },
+    };
+  }
+
+  it('QA notif + inject enabled → sendQuestion(forceReply), audit qa-pending, then on reply: inject + qa-injected + ✅', async () => {
+    const transcript = await writeTranscript('q.jsonl', [
+      { role: 'user', content: 'fix it' },
+      { role: 'assistant', content: 'Quero rodar A ou B?' },
+    ]);
+    const fake = makeFakeInject();
+    const { ctx, channel, pendingReplies } = makeContext({
+      mode: 'away',
+      inject: { enabled: true, strategy: 'tmux', session: 'claude', replyTimeoutMs: 60_000 },
+      injectStrategy: fake.strategy,
+    });
+    const app = createServer(ctx);
+    const res = await request(app)
+      .post('/v1/notify')
+      .set('X-Kuroboto-Token', TEST_TOKEN)
+      .send({
+        hook_event_name: 'Notification',
+        message: 'Claude is waiting for your input',
+        cwd: '/x/kuroboto',
+        transcript_path: transcript,
+      });
+    expect(res.body).toEqual({ ok: true, qa: true });
+    await waitFor(() => channel.sentQuestions.length === 1);
+    const q = channel.sentQuestions[0];
+    expect(q.forceReply).toBe(true);
+    expect(q.text).toContain('💭 Quero rodar A ou B?');
+    expect(q.text).toContain('❓ Claude tá esperando uma resposta');
+    expect(q.text).toContain('"fix it"');
+
+    await waitFor(() => pendingReplies.size() === 1);
+    // The mock channel assigns a sequential sentMessageId starting at 1000
+    channel.emitFreeText('A', '1000');
+    await waitFor(() => fake.calls.length === 1);
+    expect(fake.calls).toEqual(['A']);
+    await waitFor(() => channel.sentNotifications.includes('✅ Reply injetada'));
+  });
+
+  it('QA notif + inject fails at runtime → ❌ + reply text echoed back', async () => {
+    const transcript = await writeTranscript('q2.jsonl', [
+      { role: 'user', content: 'help' },
+      { role: 'assistant', content: 'pick one' },
+    ]);
+    const fake = makeFakeInject();
+    fake.failNext.err = new Error('tmux send-keys exited 1: no server');
+    const { ctx, channel, pendingReplies } = makeContext({
+      mode: 'away',
+      inject: { enabled: true, strategy: 'tmux', session: 'claude', replyTimeoutMs: 60_000 },
+      injectStrategy: fake.strategy,
+    });
+    const app = createServer(ctx);
+    await request(app)
+      .post('/v1/notify')
+      .set('X-Kuroboto-Token', TEST_TOKEN)
+      .send({
+        hook_event_name: 'Notification',
+        message: 'Claude is waiting for your input',
+        cwd: '/x/proj',
+        transcript_path: transcript,
+      });
+    await waitFor(() => channel.sentQuestions.length === 1);
+    await waitFor(() => pendingReplies.size() === 1);
+    channel.emitFreeText('B', '1000');
+    await waitFor(() => channel.sentNotifications.some((n) => n.startsWith('❌ Inject falhou')));
+    const fail = channel.sentNotifications.find((n) => n.startsWith('❌ Inject falhou'))!;
+    expect(fail).toContain('no server');
+    expect(fail).toContain('Sua reply foi:\nB');
+  });
+
+  it('QA notif + reply never arrives → qa-timeout fires after replyTimeoutMs', async () => {
+    const transcript = await writeTranscript('q3.jsonl', [
+      { role: 'user', content: 'go' },
+      { role: 'assistant', content: 'continue?' },
+    ]);
+    const fake = makeFakeInject();
+    const { ctx, channel } = makeContext({
+      mode: 'away',
+      inject: { enabled: true, strategy: 'tmux', session: 'claude', replyTimeoutMs: 50 },
+      injectStrategy: fake.strategy,
+    });
+    const app = createServer(ctx);
+    await request(app)
+      .post('/v1/notify')
+      .set('X-Kuroboto-Token', TEST_TOKEN)
+      .send({
+        hook_event_name: 'Notification',
+        message: 'Claude is waiting for your input',
+        cwd: '/x/proj',
+        transcript_path: transcript,
+      });
+    await waitFor(() => channel.sentQuestions.length === 1);
+    await waitFor(() => channel.sentNotifications.some((n) => n.startsWith('⏱ Q&A expirou')));
+    expect(fake.calls).toEqual([]);
+  });
+
+  it('non-QA notification + inject enabled → existing notif path (no sendQuestion)', async () => {
+    const fake = makeFakeInject();
+    const { ctx, channel } = makeContext({
+      mode: 'away',
+      inject: { enabled: true, strategy: 'tmux', session: 'claude', replyTimeoutMs: 60_000 },
+      injectStrategy: fake.strategy,
+    });
+    const app = createServer(ctx);
+    const res = await request(app)
+      .post('/v1/notify')
+      .set('X-Kuroboto-Token', TEST_TOKEN)
+      .send({
+        hook_event_name: 'Notification',
+        message: 'something else entirely',
+        cwd: '/x/proj',
+      });
+    expect(res.body).toMatchObject({ ok: true, delayed: false });
+    await new Promise((r) => setImmediate(r));
+    await waitFor(() => channel.sentNotifications.length === 1);
+    expect(channel.sentQuestions.length).toBe(0);
+    expect(fake.calls).toEqual([]);
+  });
+
+  it('QA notification + inject disabled → existing notif path (no sendQuestion)', async () => {
+    const { ctx, channel } = makeContext({
+      mode: 'away',
+      inject: { enabled: false, replyTimeoutMs: 60_000 },
+    });
+    const app = createServer(ctx);
+    const res = await request(app)
+      .post('/v1/notify')
+      .set('X-Kuroboto-Token', TEST_TOKEN)
+      .send({
+        hook_event_name: 'Notification',
+        message: 'Claude is waiting for your input',
+        cwd: '/x/proj',
+      });
+    expect(res.body).toMatchObject({ ok: true, delayed: false });
+    await waitFor(() => channel.sentNotifications.length === 1);
+    expect(channel.sentQuestions.length).toBe(0);
+  });
+
+  it('QA notification inside an active sleep cwd → existing notif path (no Q&A in sleep)', async () => {
+    const fake = makeFakeInject();
+    const { ctx, channel } = makeContext({
+      mode: 'away',
+      inject: { enabled: true, strategy: 'tmux', session: 'claude', replyTimeoutMs: 60_000 },
+      injectStrategy: fake.strategy,
+    });
+    const worktreePath = path.join(tmpDir, 'sleep-work');
+    vi.spyOn(ctx.state.sleeping, 'snapshot').mockReturnValue({
+      active: true,
+      slug: 'foo-abc123',
+      branch: 'sleep/foo-abc123',
+      worktreePath,
+      startedAt: Date.now(),
+      expectedEndAt: Date.now() + 60_000,
+    });
+    const app = createServer(ctx);
+    await request(app)
+      .post('/v1/notify')
+      .set('X-Kuroboto-Token', TEST_TOKEN)
+      .send({
+        hook_event_name: 'Notification',
+        message: 'Claude is waiting for your input',
+        cwd: worktreePath,
+      });
+    await waitFor(() => channel.sentNotifications.length === 1);
+    expect(channel.sentQuestions.length).toBe(0);
+    expect(fake.calls).toEqual([]);
+  });
+});
