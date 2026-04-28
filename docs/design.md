@@ -9,7 +9,7 @@
 
 ## 1. Purpose
 
-Kuroboto is a CLI tool that lets a Claude Code user respond to interactive prompts (permission requests, notifications, free-text questions) from a chat client (Telegram first, others pluggable). It originated as a private Telegram bridge in this repo's `tools/remote/` and is being formalized as a standalone, distributable npm package.
+Kuroboto is a CLI tool that lets a Claude Code user respond to interactive prompts (permission requests, notifications, free-text questions) from a chat client (Telegram first, others pluggable). It originated as a private Telegram bridge inside the PoeAltCrafter project's `tools/remote/` and was extracted into this standalone, distributable npm package.
 
 **Target audience:** developers using Claude Code who want to step away from the desk and still keep sessions productive — answering "yes/no" prompts and (optionally) free-text questions from their phone.
 
@@ -411,7 +411,7 @@ kuroboto/
 └── .github/workflows/ci.yml
 ```
 
-The repo is a fresh project (separate from PoeAltCrafter), targeted at `github.com/<user>/kuroboto`. Initial visibility: private — flipped to public when the maintainer is comfortable.
+The repo is targeted at `github.com/<user>/kuroboto`. Initial visibility: private — flipped to public when the maintainer is comfortable.
 
 ---
 
@@ -460,7 +460,7 @@ None blocking. To be revisited during implementation:
 
 ## 11. References
 
-- Origin protótipo: `tools/remote/notify-hook.ps1`, `tools/remote/telegram_bridge.py` in this repo.
+- Origin protótipo: `tools/remote/notify-hook.ps1` and `tools/remote/telegram_bridge.py` in the PoeAltCrafter repo (since deleted post-extraction).
 - Claude Code hooks docs: <https://docs.claude.com/en/docs/claude-code/hooks>
 - Telegram Bot API: <https://core.telegram.org/bots/api>
 
