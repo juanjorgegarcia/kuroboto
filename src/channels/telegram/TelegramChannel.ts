@@ -23,6 +23,7 @@ export class TelegramChannel implements Channel {
     freeText: [] as Array<(event: FreeTextEvent) => void>,
   };
   private readonly promptMessageIds = new Map<string, { messageId: number; chatId: number }>();
+  private awaitingNoteFor: string | null = null;
 
   constructor(private readonly opts: TelegramChannelOptions) {
     this.api = new TelegramApi(opts.token);
@@ -69,6 +70,11 @@ export class TelegramChannel implements Channel {
         this.opts.logger.warn('unparseable callback_data');
         return;
       }
+      if (parsed.action === 'deny_note') {
+        this.awaitingNoteFor = parsed.requestId;
+        this.editKeyboardToAwaitingNote(parsed.requestId);
+        return;
+      }
       const decision = decisionFromAction(parsed.action);
       if (decision) {
         this.clearKeyboard(parsed.requestId);
@@ -78,8 +84,27 @@ export class TelegramChannel implements Channel {
     }
     if (update.message?.text) {
       const text = update.message.text.trim();
+      if (this.awaitingNoteFor) {
+        const requestId = this.awaitingNoteFor;
+        this.awaitingNoteFor = null;
+        this.clearKeyboard(requestId);
+        for (const h of this.handlers.decision) {
+          h({ requestId, decision: { decision: 'deny', reason: text } });
+        }
+        return;
+      }
       for (const h of this.handlers.freeText) h({ text });
     }
+  }
+
+  private editKeyboardToAwaitingNote(requestId: string): void {
+    const ref = this.promptMessageIds.get(requestId);
+    if (!ref) return;
+    this.api.editMessageReplyMarkup(ref.chatId, ref.messageId, [
+      [{ text: '✏️ aguardando justificativa…', callback_data: `${requestId}:noop` }],
+    ]).catch((e) => {
+      this.opts.logger.debug('editMessageReplyMarkup (note) failed', { err: (e as Error).message });
+    });
   }
 
   private clearKeyboard(requestId: string): void {
@@ -112,6 +137,7 @@ function parseCallbackData(data: string): { requestId: string; action: string } 
 
 function decisionFromAction(action: string): Decision | null {
   if (action === 'allow') return { decision: 'allow' };
+  if (action === 'allow_remember') return { decision: 'allow', remember: true };
   if (action === 'deny') return { decision: 'deny' };
   return null;
 }
