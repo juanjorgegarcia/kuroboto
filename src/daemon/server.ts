@@ -6,6 +6,7 @@ import { PendingMap } from './pending.js';
 import { PendingNotifications } from './pendingNotifications.js';
 import type { Mode } from './state.js';
 import { GamingState } from './gaming.js';
+import { SleepingOrchestrator } from './sleeping.js';
 import { registerRoutes } from './routes.js';
 
 export interface DaemonContext {
@@ -13,7 +14,7 @@ export interface DaemonContext {
   channel: Channel;
   pending: PendingMap;
   pendingNotifications: PendingNotifications;
-  state: { mode: Mode; gaming: GamingState };
+  state: { mode: Mode; gaming: GamingState; sleeping: SleepingOrchestrator };
   logger: Logger;
   startedAt: number;
 }

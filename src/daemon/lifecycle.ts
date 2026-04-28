@@ -1,5 +1,6 @@
 import fsp from 'node:fs/promises';
 import { type Server } from 'node:http';
+import { spawn } from 'node:child_process';
 import type { Channel } from '../channels/Channel.js';
 import type { ConfigT } from '../config/schema.js';
 import { TelegramChannel } from '../channels/telegram/TelegramChannel.js';
@@ -10,6 +11,9 @@ import { PendingMap } from './pending.js';
 import { PendingNotifications } from './pendingNotifications.js';
 import { loadMode, type Mode } from './state.js';
 import { GamingState } from './gaming.js';
+import { SleepingOrchestrator } from './sleeping.js';
+import { createWorktree, removeWorktree } from './worktree.js';
+import { finishSleep } from './sleepFinish.js';
 import { createServer, type DaemonContext } from './server.js';
 
 export interface RunningDaemon {
@@ -30,7 +34,30 @@ export async function startDaemon(config: ConfigT): Promise<RunningDaemon> {
   pending.startCleanupLoop();
   const pendingNotifications = new PendingNotifications();
   const initialMode: Mode = await loadMode();
-  const state = { mode: initialMode, gaming: new GamingState() };
+  const gaming = new GamingState();
+  const sleeping = new SleepingOrchestrator({
+    spawn,
+    gaming,
+    notify: (msg) => channel.sendNotification(msg),
+    audit: async () => {}, // skip audit at daemon level; sleep events go to Telegram
+    createWorktree,
+    removeWorktree,
+    onSuccess: (session) =>
+      finishSleep(session, {
+        exec: async (cmd, args, opts) => {
+          return new Promise((resolve) => {
+            const child = spawn(cmd, args, { cwd: opts?.cwd, shell: false });
+            let stdout = '';
+            let stderr = '';
+            child.stdout?.on('data', (b) => (stdout += b.toString()));
+            child.stderr?.on('data', (b) => (stderr += b.toString()));
+            child.on('close', (code) => resolve({ code: code ?? -1, stdout, stderr }));
+          });
+        },
+        notify: (msg) => channel.sendNotification(msg),
+      }),
+  });
+  const state = { mode: initialMode, gaming, sleeping };
 
   channel.on('decision', (event) => {
     const claimed = pending.resolve(event.requestId, event.decision);
@@ -62,6 +89,7 @@ export async function startDaemon(config: ConfigT): Promise<RunningDaemon> {
     if (stopped) return;
     stopped = true;
     logger.info('daemon stopping');
+    state.sleeping.cancel().catch(() => {});
     pending.drainAll('shutdown');
     pending.stopCleanupLoop();
     pendingNotifications.cancelAll();

@@ -10,6 +10,7 @@ import type { ConfigT } from '../../src/config/schema.js';
 import * as stateModule from '../../src/daemon/state.js';
 import type { Mode } from '../../src/daemon/state.js';
 import { GamingState } from '../../src/daemon/gaming.js';
+import { SleepingOrchestrator } from '../../src/daemon/sleeping.js';
 import { MockChannel, noopLogger } from '../helpers/mockChannel.js';
 
 // Prevent integration tests from mutating ~/.config/kuroboto/state.json on the host.
@@ -43,12 +44,22 @@ function makeContext(overrides: Overrides = {}): { ctx: DaemonContext; channel: 
   };
   const pending = new PendingMap();
   const pendingNotifications = new PendingNotifications();
+  const gaming = new GamingState();
+  const sleeping = new SleepingOrchestrator({
+    spawn: () => ({ on: () => {}, kill: () => {}, pid: 0 } as never),
+    gaming,
+    notify: async () => {},
+    audit: async () => {},
+    createWorktree: async () => {},
+    removeWorktree: async () => {},
+    onSuccess: async () => {},
+  });
   const ctx: DaemonContext = {
     config,
     channel,
     pending,
     pendingNotifications,
-    state: { mode: overrides.mode ?? 'here', gaming: new GamingState() },
+    state: { mode: overrides.mode ?? 'here', gaming, sleeping },
     logger: noopLogger,
     startedAt: Date.now(),
   };
@@ -351,5 +362,52 @@ describe('daemon HTTP', () => {
     expect(editRes.body).toEqual({ decision: 'allow', reason: 'gaming' });
     ch.emitDecision(ch.sentPrompts[0].requestId, { decision: 'deny' });
     await pending;
+  });
+});
+
+describe('sleep mode endpoints', () => {
+  let ctx: DaemonContext;
+  beforeEach(() => {
+    ({ ctx } = makeContext());
+  });
+
+  it('GET /v1/sleeping returns idle when no session', async () => {
+    const res = await request(createServer(ctx))
+      .get('/v1/sleeping')
+      .set('X-Kuroboto-Token', TEST_TOKEN);
+    expect(res.body).toEqual({ active: false });
+  });
+
+  it('POST /v1/sleeping rejects empty body', async () => {
+    const res = await request(createServer(ctx))
+      .post('/v1/sleeping')
+      .set('X-Kuroboto-Token', TEST_TOKEN)
+      .send({});
+    expect(res.status).toBe(400);
+  });
+
+  it('POST /v1/sleeping rejects without prompt or plan', async () => {
+    const res = await request(createServer(ctx))
+      .post('/v1/sleeping')
+      .set('X-Kuroboto-Token', TEST_TOKEN)
+      .send({ repo: '/tmp' });
+    expect(res.status).toBe(400);
+    expect(res.body.error).toMatch(/prompt or plan/);
+  });
+
+  it('POST /v1/sleeping rejects when both prompt and plan given', async () => {
+    const res = await request(createServer(ctx))
+      .post('/v1/sleeping')
+      .set('X-Kuroboto-Token', TEST_TOKEN)
+      .send({ repo: '/tmp', prompt: 'a', plan: 'b' });
+    expect(res.status).toBe(400);
+    expect(res.body.error).toMatch(/mutually exclusive/);
+  });
+
+  it('DELETE /v1/sleeping returns cancelled=false when idle', async () => {
+    const res = await request(createServer(ctx))
+      .delete('/v1/sleeping')
+      .set('X-Kuroboto-Token', TEST_TOKEN);
+    expect(res.body).toEqual({ ok: true, cancelled: false, reason: 'idle' });
   });
 });
