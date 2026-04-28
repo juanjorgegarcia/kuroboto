@@ -2,15 +2,14 @@ import { spawn, spawnSync } from 'node:child_process';
 import chalk from 'chalk';
 
 const SESSION = 'claude';
-
-function tmuxHasSession(session: string): boolean {
-  const r = spawnSync('tmux', ['has-session', '-t', session], { stdio: 'ignore' });
-  return r.status === 0;
-}
+const STARTUP_COMMAND = 'kuroboto claude';
 
 function tmuxAvailable(): boolean {
-  const r = spawnSync('tmux', ['-V'], { stdio: 'ignore' });
-  return r.status === 0;
+  return spawnSync('tmux', ['-V'], { stdio: 'ignore' }).status === 0;
+}
+
+function tmuxHasSession(session: string): boolean {
+  return spawnSync('tmux', ['has-session', '-t', session], { stdio: 'ignore' }).status === 0;
 }
 
 export async function ohayoCommand(): Promise<void> {
@@ -21,25 +20,35 @@ export async function ohayoCommand(): Promise<void> {
     process.exit(1);
   }
 
-  const exists = tmuxHasSession(SESSION);
-  if (exists) {
-    console.log(chalk.dim(`attaching to tmux session "${SESSION}"…`));
-    const child = spawn('tmux', ['attach-session', '-t', SESSION], { stdio: 'inherit' });
-    child.on('exit', (c) => process.exit(c ?? 0));
-    child.on('error', (e) => {
-      console.error(chalk.red(`tmux failed: ${e.message}`));
+  if (!tmuxHasSession(SESSION)) {
+    console.log(chalk.dim(`creating tmux session "${SESSION}"…`));
+    // Step 1: detached empty session (avoids tmux-windows quirks with `-d -c`
+    // and with shell-command passed as a single arg to new-session).
+    const create = spawnSync('tmux', ['new-session', '-d', '-s', SESSION], { stdio: 'inherit' });
+    if (create.status !== 0) {
+      console.error(chalk.red(`failed to create tmux session (exit ${create.status})`));
       process.exit(1);
-    });
-    return;
+    }
+    // Step 2: paste the startup command into the session's first pane.
+    const send = spawnSync(
+      'tmux',
+      ['send-keys', '-t', SESSION, STARTUP_COMMAND, 'Enter'],
+      { stdio: 'inherit' },
+    );
+    if (send.status !== 0) {
+      console.error(chalk.red(`failed to send keys to tmux session (exit ${send.status})`));
+      process.exit(1);
+    }
+    console.log(chalk.dim(`session ready, attaching…`));
+  } else {
+    console.log(chalk.dim(`attaching to existing tmux session "${SESSION}"…`));
   }
 
-  console.log(chalk.dim(`creating tmux session "${SESSION}" — daemon will be started by \`kuroboto claude\` inside…`));
-  // tmux passes the shell-command as a single arg; we pass `kuroboto claude` so
-  // the daemon-ensure logic runs inside the new pane.
-  const child = spawn('tmux', ['new-session', '-s', SESSION, 'kuroboto claude'], { stdio: 'inherit' });
+  // Step 3: attach in foreground.
+  const child = spawn('tmux', ['attach-session', '-t', SESSION], { stdio: 'inherit' });
   child.on('exit', (c) => process.exit(c ?? 0));
   child.on('error', (e) => {
-    console.error(chalk.red(`tmux failed: ${e.message}`));
+    console.error(chalk.red(`tmux attach failed: ${e.message}`));
     process.exit(1);
   });
 }
