@@ -52,7 +52,7 @@ The standard loop is documented in `docs/workflows/spec-via-sleep.md`:
 1. Manual usage surfaces a pain
 2. `/superpowers:brainstorming` (or `/morpheus`) to produce a spec in `docs/specs/`
 3. Commit spec to main
-4. `kuroboto sleep --plan docs/specs/<name>.md` dispatches an autonomous Claude in a worktree → opens PR
+4. `kuroboto sleeping start --plan docs/specs/<name>.md` dispatches an autonomous Claude in a worktree → opens PR
 5. Review (manual + `/code-review` skill)
 6. Squash merge
 

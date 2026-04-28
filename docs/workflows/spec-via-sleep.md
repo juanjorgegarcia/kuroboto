@@ -19,7 +19,7 @@ How features get from "I noticed something annoying" to a merged PR in this repo
                    └──────────────┬───────────────┘
                                   │
                    ┌──────────────▼───────────────┐
-                   │  kuroboto sleep --plan <…>   │  (autonomous)
+                   │  kuroboto sleeping start     │  (autonomous)
                    │  → branch + worktree + PR    │
                    └──────────────┬───────────────┘
                                   │
@@ -65,7 +65,7 @@ Specs are docs. Commit them straight to main (no PR) before launching sleep agen
 ### 5. Dispatch sleep mode
 
 ```bash
-kuroboto sleep --repo /path/to/repo --plan docs/specs/<feature>.md
+kuroboto sleeping start --plan docs/specs/<feature>.md --repo /path/to/repo
 ```
 
 The daemon:
