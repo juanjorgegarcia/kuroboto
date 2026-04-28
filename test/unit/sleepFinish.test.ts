@@ -84,6 +84,62 @@ describe('finishSleep', () => {
     expect(body).toMatch(/sleep mode|kuroboto sleeping|automated/i);
   });
 
+  it('success path → notifyDesktop called with level success and slug + URL', async () => {
+    const { deps, calls } = makeDeps();
+    const desktopCalls: Array<{ title: string; body: string; level: string }> = [];
+    deps.notifyDesktop = async (opts) => {
+      desktopCalls.push(opts);
+    };
+    await finishSleep(SESSION, deps);
+    expect(calls.notify).toHaveLength(1); // existing Telegram path still fires
+    expect(desktopCalls).toHaveLength(1);
+    expect(desktopCalls[0].level).toBe('success');
+    expect(desktopCalls[0].body).toContain('add-feature-x');
+    expect(desktopCalls[0].body).toContain('https://github.com/x/y/pull/42');
+  });
+
+  it('push failure → notifyDesktop called with level error', async () => {
+    const { deps, calls } = makeDeps();
+    const desktopCalls: Array<{ title: string; body: string; level: string }> = [];
+    deps.notifyDesktop = async (opts) => {
+      desktopCalls.push(opts);
+    };
+    deps.exec = vi.fn(async (cmd) => {
+      if (cmd === 'git') return { code: 1, stdout: '', stderr: 'no upstream' };
+      return { code: 0, stdout: '', stderr: '' };
+    });
+    await finishSleep(SESSION, deps);
+    expect(calls.notify).toHaveLength(1);
+    expect(desktopCalls).toHaveLength(1);
+    expect(desktopCalls[0].level).toBe('error');
+    expect(desktopCalls[0].body.toLowerCase()).toContain('push');
+  });
+
+  it('pr create failure → notifyDesktop called with level error', async () => {
+    const { deps } = makeDeps();
+    const desktopCalls: Array<{ title: string; body: string; level: string }> = [];
+    deps.notifyDesktop = async (opts) => {
+      desktopCalls.push(opts);
+    };
+    deps.exec = vi.fn(async (cmd, args) => {
+      if (cmd === 'git') return { code: 0, stdout: '', stderr: '' };
+      if (cmd === 'gh' && args.includes('pr')) return { code: 1, stdout: '', stderr: 'no remote' };
+      return { code: 0, stdout: '', stderr: '' };
+    });
+    await finishSleep(SESSION, deps);
+    expect(desktopCalls).toHaveLength(1);
+    expect(desktopCalls[0].level).toBe('error');
+    expect(desktopCalls[0].body.toLowerCase()).toContain('pr');
+  });
+
+  it('notifyDesktop omitted → finish flow still completes (Telegram still sent)', async () => {
+    const { deps, calls } = makeDeps();
+    // notifyDesktop intentionally undefined
+    await finishSleep(SESSION, deps);
+    expect(calls.notify).toHaveLength(1);
+    expect(calls.notify[0]).toContain('https://github.com/x/y/pull/42');
+  });
+
   it('uses the default branch from gh repo view', async () => {
     const { deps, calls } = makeDeps();
     // Override the exec to return 'develop' as default branch
