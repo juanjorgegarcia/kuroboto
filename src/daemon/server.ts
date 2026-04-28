@@ -5,6 +5,7 @@ import type { ConfigT } from '../config/schema.js';
 import { PendingMap } from './pending.js';
 import { PendingNotifications } from './pendingNotifications.js';
 import type { Mode } from './state.js';
+import { GamingState } from './gaming.js';
 import { registerRoutes } from './routes.js';
 
 export interface DaemonContext {
@@ -12,7 +13,7 @@ export interface DaemonContext {
   channel: Channel;
   pending: PendingMap;
   pendingNotifications: PendingNotifications;
-  state: { mode: Mode; gaming: { active: boolean; until: number | null } };
+  state: { mode: Mode; gaming: GamingState };
   logger: Logger;
   startedAt: number;
 }

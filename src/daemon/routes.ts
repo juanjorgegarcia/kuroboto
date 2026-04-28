@@ -13,7 +13,7 @@ export function registerRoutes(app: Express, ctx: DaemonContext): void {
       pending: ctx.pending.size(),
       pendingNotifications: ctx.pendingNotifications.size(),
       mode: ctx.state.mode,
-      gaming: ctx.state.gaming,
+      gaming: ctx.state.gaming.snapshot(),
     });
   });
 
@@ -22,18 +22,33 @@ export function registerRoutes(app: Express, ctx: DaemonContext): void {
   });
 
   app.get('/v1/gaming', (_req, res) => {
-    res.json({ gaming: ctx.state.gaming });
+    res.json(ctx.state.gaming.snapshot());
   });
 
   app.put('/v1/gaming', (req: Request, res: Response) => {
-    const on = (req.body ?? {}).on;
-    if (typeof on !== 'boolean') {
-      res.status(400).json({ error: "body must be { on: true | false }" });
+    const body = (req.body ?? {}) as { on?: unknown; durationMs?: unknown };
+    if (typeof body.on !== 'boolean') {
+      res.status(400).json({ error: "body must be { on: true, durationMs?: number } | { on: false }" });
       return;
     }
-    ctx.state.gaming = { active: on, until: null };
-    ctx.logger.info('gaming toggled', { on });
-    res.json({ ok: true, gaming: ctx.state.gaming });
+    if (body.on === false) {
+      ctx.state.gaming.cancel();
+    } else {
+      const durationMs = body.durationMs;
+      if (durationMs !== undefined && (typeof durationMs !== 'number' || durationMs <= 0)) {
+        res.status(400).json({ error: 'durationMs must be a positive number when provided' });
+        return;
+      }
+      try {
+        ctx.state.gaming.arm(durationMs as number | undefined);
+      } catch (e) {
+        res.status(400).json({ error: (e as Error).message });
+        return;
+      }
+    }
+    const snap = ctx.state.gaming.snapshot();
+    ctx.logger.info('gaming toggled', snap as unknown as Record<string, unknown>);
+    res.json({ ok: true, active: snap.active, until: snap.until });
   });
 
   app.put('/v1/mode', (req: Request, res: Response) => {
@@ -86,7 +101,8 @@ export function registerRoutes(app: Express, ctx: DaemonContext): void {
 
   app.post('/v1/permission', async (req: Request, res: Response) => {
     const payload = req.body as PreToolUsePayload;
-    if (ctx.state.gaming.active) {
+    const gamingSnap = ctx.state.gaming.snapshot();
+    if (gamingSnap.active && !ctx.config.policy.gamingAlwaysAsk.includes(payload.tool_name)) {
       const decision: Decision = { decision: 'allow', reason: 'gaming' };
       appendAudit({
         ts: new Date().toISOString(),
@@ -98,8 +114,6 @@ export function registerRoutes(app: Express, ctx: DaemonContext): void {
         source: 'gaming',
         remember: false,
       }).catch((e) => ctx.logger.warn('audit append failed', { err: (e as Error).message }));
-      // Fire-and-forget FYI notification (no buttons) so the user can monitor
-      // what Claude is doing while gaming mode auto-allows everything.
       ctx.channel.sendNotification(`🎮 ${formatPermissionPrompt(payload)}`)
         .catch((e) => ctx.logger.warn('gaming notify failed', { err: (e as Error).message }));
       res.json(decision);
