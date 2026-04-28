@@ -66,18 +66,18 @@ describe('SleepingOrchestrator', () => {
       workRoot: '/y/wt',
       maxDurationMs: 60_000,
     });
-    expect(session.slug).toMatch(/^implement-billing-flow$/);
-    expect(session.branch).toBe('sleep/implement-billing-flow');
+    expect(session.slug).toMatch(/^implement-billing-flow-[a-z0-9]{6}$/);
+    expect(session.branch).toMatch(/^sleep\/implement-billing-flow-[a-z0-9]{6}$/);
     expect(state.worktreeCreated).toEqual({
       repo: '/x/repo',
-      branch: 'sleep/implement-billing-flow',
-      dir: '/y/wt/implement-billing-flow',
+      branch: session.branch,
+      dir: `/y/wt/${session.slug}`,
     });
     expect(deps.gaming.snapshot().active).toBe(true);
     expect(state.child).toBeDefined();
     const snap = orch.snapshot();
     expect(snap.active).toBe(true);
-    if (snap.active) expect(snap.slug).toBe('implement-billing-flow');
+    if (snap.active) expect(snap.slug).toMatch(/^implement-billing-flow-[a-z0-9]{6}$/);
   });
 
   it('rejects start when one is already active', async () => {
@@ -97,8 +97,8 @@ describe('SleepingOrchestrator', () => {
     await orch.start({ repo: '/x', prompt: 'p', workRoot: '/y', maxDurationMs: 60_000 });
     expect(gaming.snapshot().active).toBe(true);
     state.child!.emit('exit', 0, null);
-    await Promise.resolve();
-    await Promise.resolve();
+    // onSuccess is awaited inside the IIFE — flush microtasks until orchestrator goes idle.
+    for (let i = 0; i < 10; i++) await Promise.resolve();
     expect(deps.onSuccess).toHaveBeenCalledTimes(1);
     expect(gaming.snapshot().active).toBe(false);
     expect(orch.snapshot().active).toBe(false);
@@ -134,7 +134,10 @@ describe('SleepingOrchestrator', () => {
     const { deps, state } = makeDeps();
     const orch = new SleepingOrchestrator(deps);
     await orch.start({ repo: '/x', prompt: 'p', workRoot: '/y', maxDurationMs: 60_000 });
-    await orch.cancel();
+    const cancelPromise = orch.cancel();
+    // FakeChild.kill() uses setImmediate() to emit exit; advance timers to trigger it
+    vi.advanceTimersByTime(0);
+    await cancelPromise;
     expect(state.child!.killed).toBe(true);
     expect(state.notifications.some((n) => n.toLowerCase().includes('cancel'))).toBe(true);
     expect(orch.snapshot().active).toBe(false);
@@ -164,8 +167,26 @@ describe('SleepingOrchestrator', () => {
     const orch = new SleepingOrchestrator(deps);
     await orch.start({ repo: '/x', prompt: 'p', workRoot: '/y', maxDurationMs: 60_000 });
     state.child!.emit('exit', 0, null);
-    await Promise.resolve();
-    await Promise.resolve();
+    for (let i = 0; i < 10; i++) await Promise.resolve();
     expect(deps.gaming.snapshot().active).toBe(true);
+  });
+
+  it('gaming with prior timer restored to remaining duration after success', async () => {
+    const { deps, state } = makeDeps();
+    // prior gaming on with 1000ms timer
+    deps.gaming.arm(1000);
+    const orch = new SleepingOrchestrator(deps);
+    await orch.start({ repo: '/x', prompt: 'p', workRoot: '/y', maxDurationMs: 60_000 });
+    // sleep took 200ms — fast-forward via fake timer
+    vi.advanceTimersByTime(200);
+    state.child!.emit('exit', 0, null);
+    for (let i = 0; i < 10; i++) await Promise.resolve();
+    const snap = deps.gaming.snapshot();
+    expect(snap.active).toBe(true);
+    expect(snap.until).not.toBeNull();
+    // Remaining should be roughly 800ms — allow generous tolerance.
+    const remaining = (snap.until ?? 0) - Date.now();
+    expect(remaining).toBeGreaterThan(700);
+    expect(remaining).toBeLessThan(900);
   });
 });

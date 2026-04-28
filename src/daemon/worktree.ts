@@ -1,8 +1,20 @@
 import fsp from 'node:fs/promises';
 import path from 'node:path';
 import { spawn } from 'node:child_process';
+import { randomBytes } from 'node:crypto';
 
 const SLUG_MAX = 40;
+const SUFFIX_LEN = 6;
+const SUFFIX_ALPHABET = 'abcdefghijklmnopqrstuvwxyz0123456789';
+
+function randomSuffix(): string {
+  const bytes = randomBytes(SUFFIX_LEN);
+  let out = '';
+  for (let i = 0; i < SUFFIX_LEN; i++) {
+    out += SUFFIX_ALPHABET[bytes[i] % SUFFIX_ALPHABET.length];
+  }
+  return out;
+}
 
 function runGit(cwd: string, args: string[]): Promise<{ code: number; stdout: string; stderr: string }> {
   return new Promise((resolve) => {
@@ -15,18 +27,25 @@ function runGit(cwd: string, args: string[]): Promise<{ code: number; stdout: st
   });
 }
 
-export function slugify(input: string): string {
+export function slugify(input: string, withSuffix: boolean = true): string {
   const cleaned = input
     .toLowerCase()
     .replace(/[^a-z0-9]+/g, '-')
     .replace(/-+/g, '-')
     .replace(/^-+|-+$/g, '');
-  if (!cleaned) return 'sleep';
-  if (cleaned.length <= SLUG_MAX) return cleaned;
-  // truncate at last dash boundary <= SLUG_MAX
-  const truncated = cleaned.slice(0, SLUG_MAX);
-  const lastDash = truncated.lastIndexOf('-');
-  return lastDash > SLUG_MAX / 2 ? truncated.slice(0, lastDash) : truncated;
+  let slug: string;
+  if (!cleaned) {
+    slug = 'sleep';
+  } else if (cleaned.length <= SLUG_MAX) {
+    slug = cleaned;
+  } else {
+    // truncate at last dash boundary <= SLUG_MAX
+    const truncated = cleaned.slice(0, SLUG_MAX);
+    const lastDash = truncated.lastIndexOf('-');
+    slug = lastDash > SLUG_MAX / 2 ? truncated.slice(0, lastDash) : truncated;
+  }
+  if (!withSuffix) return slug;
+  return `${slug}-${randomSuffix()}`;
 }
 
 export async function worktreeExists(repoRoot: string, dir: string): Promise<boolean> {

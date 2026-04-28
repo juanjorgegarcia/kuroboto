@@ -56,12 +56,22 @@ export async function finishSleep(session: SleepingSession, deps: FinishDeps): P
     return;
   }
 
-  // 2. Create PR via gh
+  // 2. Query the repo's default branch
+  let baseBranch = 'main';
+  const view = await deps.exec('gh', ['repo', 'view', '--json', 'defaultBranchRef', '--jq', '.defaultBranchRef.name'], {
+    cwd: session.worktreePath,
+  });
+  if (view.code === 0) {
+    const trimmed = view.stdout.trim();
+    if (trimmed) baseBranch = trimmed;
+  }
+
+  // 3. Create PR via gh
   const title = humanise(session.slug);
   const body = buildBody(session);
   const create = await deps.exec(
     'gh',
-    ['pr', 'create', '--base', 'main', '--head', session.branch, '--title', title, '--body', body],
+    ['pr', 'create', '--base', baseBranch, '--head', session.branch, '--title', title, '--body', body],
     { cwd: session.worktreePath },
   );
   if (create.code !== 0) {
