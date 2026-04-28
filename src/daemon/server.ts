@@ -2,8 +2,10 @@ import express, { type Express, type Request, type Response, type NextFunction }
 import type { Channel } from '../channels/Channel.js';
 import type { Logger } from '../core/logger.js';
 import type { ConfigT } from '../config/schema.js';
+import type { InjectStrategy } from '../inject/index.js';
 import { PendingMap } from './pending.js';
 import { PendingNotifications } from './pendingNotifications.js';
+import type { PendingReplies } from './pendingReplies.js';
 import type { Mode } from './state.js';
 import { GamingState } from './gaming.js';
 import { SleepingOrchestrator } from './sleeping.js';
@@ -14,6 +16,8 @@ export interface DaemonContext {
   channel: Channel;
   pending: PendingMap;
   pendingNotifications: PendingNotifications;
+  pendingReplies: PendingReplies;
+  inject: InjectStrategy | null;
   state: { mode: Mode; gaming: GamingState; sleeping: SleepingOrchestrator };
   logger: Logger;
   startedAt: number;

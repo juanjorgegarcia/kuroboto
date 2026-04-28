@@ -6,11 +6,13 @@ import os from 'node:os';
 import { createServer, type DaemonContext } from '../../src/daemon/server.js';
 import { PendingMap } from '../../src/daemon/pending.js';
 import { PendingNotifications } from '../../src/daemon/pendingNotifications.js';
+import { PendingReplies } from '../../src/daemon/pendingReplies.js';
 import type { ConfigT } from '../../src/config/schema.js';
 import * as stateModule from '../../src/daemon/state.js';
 import type { Mode } from '../../src/daemon/state.js';
 import { GamingState } from '../../src/daemon/gaming.js';
 import { SleepingOrchestrator } from '../../src/daemon/sleeping.js';
+import type { InjectStrategy } from '../../src/inject/index.js';
 import { MockChannel, noopLogger } from '../helpers/mockChannel.js';
 
 // Prevent integration tests from mutating ~/.config/kuroboto/state.json on the host.
@@ -24,14 +26,20 @@ const TEST_TOKEN = 'a'.repeat(64);
 interface Overrides {
   mode?: Mode;
   policy?: Partial<ConfigT['policy']>;
+  inject?: ConfigT['inject'];
+  injectStrategy?: InjectStrategy | null;
 }
 
-function makeContext(overrides: Overrides = {}): { ctx: DaemonContext; channel: MockChannel } {
+function makeContext(overrides: Overrides = {}): {
+  ctx: DaemonContext;
+  channel: MockChannel;
+  pendingReplies: PendingReplies;
+} {
   const channel = new MockChannel();
   const config: ConfigT = {
     channel: { type: 'telegram', token: 'x', chatId: 1 },
     daemon: { port: 47891, authToken: TEST_TOKEN },
-    inject: { enabled: false },
+    inject: overrides.inject ?? { enabled: false, replyTimeoutMs: 7_200_000 },
     policy: {
       permissionTimeoutMs: 1_000,
       notifyDelayMs: 60_000,
@@ -44,6 +52,7 @@ function makeContext(overrides: Overrides = {}): { ctx: DaemonContext; channel: 
   };
   const pending = new PendingMap();
   const pendingNotifications = new PendingNotifications();
+  const pendingReplies = new PendingReplies();
   const gaming = new GamingState();
   const sleeping = new SleepingOrchestrator({
     spawn: () => ({ on: () => {}, kill: () => {}, pid: 0 } as never),
@@ -59,13 +68,18 @@ function makeContext(overrides: Overrides = {}): { ctx: DaemonContext; channel: 
     channel,
     pending,
     pendingNotifications,
+    pendingReplies,
+    inject: overrides.injectStrategy ?? null,
     state: { mode: overrides.mode ?? 'here', gaming, sleeping },
     logger: noopLogger,
     startedAt: Date.now(),
     hostname: 'test-host',
   };
   channel.on('decision', (e) => pending.resolve(e.requestId, e.decision));
-  return { ctx, channel };
+  channel.on('freeText', (e) => {
+    if (e.replyToMessageId) pendingReplies.resolveBySentMessageId(e.replyToMessageId, e.text);
+  });
+  return { ctx, channel, pendingReplies };
 }
 
 async function waitFor(cond: () => boolean, timeoutMs = 1_000): Promise<void> {

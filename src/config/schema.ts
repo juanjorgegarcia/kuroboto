@@ -17,6 +17,7 @@ export const InjectConfig = z.object({
   enabled: z.boolean(),
   strategy: z.enum(['tmux']).optional(),
   session: z.string().optional(),
+  replyTimeoutMs: z.number().int().min(1000).default(7_200_000),
 });
 
 export const PolicyConfig = z.object({

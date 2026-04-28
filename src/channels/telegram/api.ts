@@ -8,6 +8,7 @@ export interface TelegramUpdate {
     chat: { id: number; type: string };
     date: number;
     text?: string;
+    reply_to_message?: { message_id: number };
   };
   callback_query?: {
     id: string;
@@ -49,15 +50,20 @@ export class TelegramApi {
   async sendMessage(
     chatId: number,
     text: string,
-    keyboard?: InlineKeyboardButton[][],
-    timeoutMs = 10_000,
+    opts?: { keyboard?: InlineKeyboardButton[][]; forceReply?: boolean; timeoutMs?: number },
   ): Promise<number> {
+    const timeoutMs = opts?.timeoutMs ?? 10_000;
     const ctrl = new AbortController();
     const timer = setTimeout(() => ctrl.abort(), timeoutMs);
     try {
       const body: Record<string, unknown> = { chat_id: chatId, text };
-      if (keyboard) {
-        body.reply_markup = { inline_keyboard: keyboard };
+      if (opts?.keyboard) {
+        body.reply_markup = { inline_keyboard: opts.keyboard };
+      } else if (opts?.forceReply) {
+        // force_reply opens an input box on the user's client with the bot's
+        // message quoted above. Telegram returns the user's reply with
+        // reply_to_message.message_id pointing at this message.
+        body.reply_markup = { force_reply: true };
       }
       const res = await fetch(this.url('sendMessage'), {
         method: 'POST',

@@ -48,6 +48,11 @@ export interface PromptRequest {
   buttons: PromptButton[];
 }
 
+export interface QuestionRequest {
+  text: string;
+  forceReply?: boolean;
+}
+
 export type PromptButtonAction = 'allow' | 'allow_remember' | 'deny' | 'deny_note';
 
 export interface PromptButton {
@@ -62,4 +67,6 @@ export interface DecisionEvent {
 
 export interface FreeTextEvent {
   text: string;
+  /** Telegram `reply_to_message.message_id`, set when the user used the Reply UI. */
+  replyToMessageId?: string;
 }

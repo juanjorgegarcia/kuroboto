@@ -1,5 +1,6 @@
 import type {
   PromptRequest,
+  QuestionRequest,
   DecisionEvent,
   FreeTextEvent,
   Decision,
@@ -51,8 +52,15 @@ export class TelegramChannel implements Channel {
 
   async sendPrompt(req: PromptRequest): Promise<void> {
     const keyboard = buildKeyboard(req);
-    const messageId = await this.api.sendMessage(this.opts.chatId, req.text, keyboard);
+    const messageId = await this.api.sendMessage(this.opts.chatId, req.text, { keyboard });
     this.promptMessageIds.set(req.requestId, { messageId, chatId: this.opts.chatId });
+  }
+
+  async sendQuestion(req: QuestionRequest): Promise<{ sentMessageId: string }> {
+    const messageId = await this.api.sendMessage(this.opts.chatId, req.text, {
+      forceReply: req.forceReply ?? true,
+    });
+    return { sentMessageId: String(messageId) };
   }
 
   on<K extends ChannelEventName>(event: K, handler: ChannelEventHandlers[K]): void {
@@ -84,6 +92,17 @@ export class TelegramChannel implements Channel {
     }
     if (update.message?.text) {
       const text = update.message.text.trim();
+      const replyToMessageId = update.message.reply_to_message?.message_id;
+      // A reply_to_message means the user used Telegram's Reply UI — almost
+      // certainly answering a Q&A prompt, so route it as freeText with the
+      // correlation id and skip the deny_note interception (Q&A and deny_note
+      // can be in flight simultaneously, but only Q&A uses replies).
+      if (replyToMessageId !== undefined) {
+        for (const h of this.handlers.freeText) {
+          h({ text, replyToMessageId: String(replyToMessageId) });
+        }
+        return;
+      }
       if (this.awaitingNoteFor) {
         const requestId = this.awaitingNoteFor;
         this.awaitingNoteFor = null;
