@@ -9,8 +9,14 @@ import { saveMode, type Mode } from './state.js';
 import { computeAllowMatcher, addProjectAllow } from './allowlist.js';
 import { loadAllowlist, matchAny } from './allowlistMatch.js';
 import { appendAudit } from './audit.js';
+import { formatPermissionPrompt, formatNotification, type PromptFormatContext } from './promptFormat.js';
 
 export function registerRoutes(app: Express, ctx: DaemonContext): void {
+  const fmtCtx = (): PromptFormatContext => ({
+    hostname: ctx.hostname,
+    sleeping: ctx.state.sleeping.snapshot(),
+  });
+
   app.get('/v1/health', (_req, res) => {
     res.json({
       ok: true,
@@ -147,13 +153,15 @@ export function registerRoutes(app: Express, ctx: DaemonContext): void {
       hasMessage: typeof payload.message === 'string',
     });
     if (delayMs <= 0) {
-      ctx.channel.sendNotification(formatNotification(payload))
+      formatNotification(payload, fmtCtx())
+        .then((text) => ctx.channel.sendNotification(text))
         .then(() => ctx.logger.info('notify sent (immediate)'))
         .catch((e) => ctx.logger.warn('sendNotification failed', { err: (e as Error).message }));
     } else {
       ctx.pendingNotifications.arm(payload, delayMs, (p) => {
         ctx.logger.info('notify timer fired, sending');
-        ctx.channel.sendNotification(formatNotification(p))
+        formatNotification(p, fmtCtx())
+          .then((text) => ctx.channel.sendNotification(text))
           .then(() => ctx.logger.info('notify sent (delayed)'))
           .catch((e) => ctx.logger.warn('sendNotification (delayed) failed', { err: (e as Error).message }));
       });
@@ -176,7 +184,8 @@ export function registerRoutes(app: Express, ctx: DaemonContext): void {
         source: 'gaming',
         remember: false,
       }).catch((e) => ctx.logger.warn('audit append failed', { err: (e as Error).message }));
-      ctx.channel.sendNotification(`🎮 ${formatPermissionPrompt(payload)}`)
+      formatPermissionPrompt(payload, fmtCtx())
+        .then((text) => ctx.channel.sendNotification(`🎮 ${text}`))
         .catch((e) => ctx.logger.warn('gaming notify failed', { err: (e as Error).message }));
       res.json(decision);
       return;
@@ -229,9 +238,10 @@ export function registerRoutes(app: Express, ctx: DaemonContext): void {
 
     const { requestId, promise } = ctx.pending.create(ctx.config.policy.permissionTimeoutMs);
     try {
+      const text = await formatPermissionPrompt(payload, fmtCtx());
       await ctx.channel.sendPrompt({
         requestId,
-        text: formatPermissionPrompt(payload),
+        text,
         buttons: [
           { label: '✅ Allow', action: 'allow' },
           { label: '🔓 Allow & remember', action: 'allow_remember' },
@@ -271,39 +281,6 @@ export function registerRoutes(app: Express, ctx: DaemonContext): void {
     const { remember: _r, ...stripped } = decision as { remember?: boolean } & Decision;
     res.json(stripped);
   });
-}
-
-function projectName(cwd: string | undefined): string {
-  if (!cwd) return 'unknown';
-  const parts = cwd.split(/[\\/]/).filter(Boolean);
-  return parts[parts.length - 1] ?? 'unknown';
-}
-
-function formatNotification(p: NotificationPayload): string {
-  const folder = projectName(p.cwd);
-  const msg = p.message ?? 'Claude Code precisa de atenção.';
-  return `[${folder}] ${msg}`;
-}
-
-function formatPermissionPrompt(p: PreToolUsePayload): string {
-  const folder = projectName(p.cwd);
-  const summary = summarizeToolInput(p.tool_name, p.tool_input);
-  return `[${folder}] Pode rodar?\n\n${p.tool_name}: ${summary}`;
-}
-
-function summarizeToolInput(tool: string, input: Record<string, unknown>): string {
-  if (tool === 'Bash' && typeof input.command === 'string') {
-    return truncate(input.command, 200);
-  }
-  if ((tool === 'Edit' || tool === 'Write') && typeof input.file_path === 'string') {
-    return input.file_path;
-  }
-  const json = JSON.stringify(input);
-  return truncate(json, 200);
-}
-
-function truncate(s: string, max: number): string {
-  return s.length <= max ? s : s.slice(0, max - 1) + '…';
 }
 
 function deriveSource(d: Decision): string {
