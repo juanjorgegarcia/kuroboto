@@ -26,7 +26,7 @@ export interface StopPayload {
 export type HookPayload = NotificationPayload | PreToolUsePayload | StopPayload;
 
 export type Decision =
-  | { decision: 'allow'; reason?: string }
+  | { decision: 'allow'; reason?: string; remember?: boolean }
   | { decision: 'deny'; reason?: string }
   | { decision: 'ask'; reason?: string };
 
@@ -36,9 +36,11 @@ export interface PromptRequest {
   buttons: PromptButton[];
 }
 
+export type PromptButtonAction = 'allow' | 'allow_remember' | 'deny' | 'deny_note';
+
 export interface PromptButton {
   label: string;
-  action: 'allow' | 'deny' | 'reply';
+  action: PromptButtonAction;
 }
 
 export interface DecisionEvent {

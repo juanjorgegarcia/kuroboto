@@ -2,6 +2,8 @@ import type { Express, Request, Response } from 'express';
 import type { DaemonContext } from './server.js';
 import type { PreToolUsePayload, NotificationPayload, Decision } from '../core/types.js';
 import { saveMode, type Mode } from './state.js';
+import { computeAllowMatcher, addProjectAllow } from './allowlist.js';
+import { appendAudit } from './audit.js';
 
 export function registerRoutes(app: Express, ctx: DaemonContext): void {
   app.get('/v1/health', (_req, res) => {
@@ -83,7 +85,9 @@ export function registerRoutes(app: Express, ctx: DaemonContext): void {
         text: formatPermissionPrompt(payload),
         buttons: [
           { label: '✅ Allow', action: 'allow' },
+          { label: '🔓 Allow & remember', action: 'allow_remember' },
           { label: '❌ Deny', action: 'deny' },
+          { label: '💬 Deny with note', action: 'deny_note' },
         ],
       });
     } catch (e) {
@@ -91,7 +95,32 @@ export function registerRoutes(app: Express, ctx: DaemonContext): void {
       ctx.pending.resolve(requestId, { decision: 'ask', reason: 'channel unavailable' });
     }
     const decision = await promise;
-    res.json(decision);
+    if (decision.decision === 'allow' && decision.remember && payload.cwd) {
+      const matcher = computeAllowMatcher(
+        payload.tool_name,
+        payload.tool_input,
+        ctx.config.policy.rememberGranularity,
+      );
+      try {
+        await addProjectAllow(payload.cwd, matcher);
+        ctx.logger.info('persisted allow matcher', { matcher, cwd: payload.cwd });
+      } catch (e) {
+        ctx.logger.warn('failed to persist allow matcher', { err: (e as Error).message });
+      }
+    }
+    // Audit log entry — best-effort, never blocks the hook response
+    appendAudit({
+      ts: new Date().toISOString(),
+      requestId,
+      tool: payload.tool_name,
+      cwd: payload.cwd ?? null,
+      decision: decision.decision,
+      reason: decision.reason ?? null,
+      source: deriveSource(decision),
+      remember: decision.decision === 'allow' && !!decision.remember,
+    }).catch((e) => ctx.logger.warn('audit append failed', { err: (e as Error).message }));
+    const { remember: _r, ...stripped } = decision as { remember?: boolean } & Decision;
+    res.json(stripped);
   });
 }
 
@@ -126,4 +155,10 @@ function summarizeToolInput(tool: string, input: Record<string, unknown>): strin
 
 function truncate(s: string, max: number): string {
   return s.length <= max ? s : s.slice(0, max - 1) + '…';
+}
+
+function deriveSource(d: Decision): string {
+  if (d.decision === 'deny' && d.reason === 'timeout') return 'timeout';
+  if (d.decision === 'ask' && d.reason === 'channel unavailable') return 'channel-error';
+  return 'telegram';
 }

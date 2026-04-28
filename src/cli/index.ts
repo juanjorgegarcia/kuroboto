@@ -8,6 +8,8 @@ import { hookCommand } from './hook.js';
 import { claudeCommand } from './claude.js';
 import { hereCommand, awayCommand } from './mode.js';
 import { ohayoCommand } from './ohayo.js';
+import { allowlistList, allowlistExport } from './allowlist.js';
+import { auditList, auditExport } from './audit.js';
 
 // Special-case: `kuroboto claude [...args]` forwards everything raw to Claude Code.
 // Commander would otherwise eat global flags like --version / --help before they
@@ -138,6 +140,60 @@ program
       await hookCommand(type);
     } catch (e) {
       process.stderr.write(`[kuroboto] hook ${type} crashed: ${(e as Error).message}\n`);
+      process.exit(1);
+    }
+  });
+
+const allowlist = program.command('allowlist').description('Inspect the project allowlist (.claude/settings.local.json)');
+allowlist
+  .command('list [dir]')
+  .description('List allow matchers for the given dir (default: cwd)')
+  .action(async (dir?: string) => {
+    try {
+      await allowlistList(dir ?? process.cwd());
+    } catch (e) {
+      console.error(`allowlist list failed: ${(e as Error).message}`);
+      process.exit(1);
+    }
+  });
+allowlist
+  .command('export [dir]')
+  .description('Print full settings.local.json as JSON')
+  .action(async (dir?: string) => {
+    try {
+      await allowlistExport(dir ?? process.cwd());
+    } catch (e) {
+      console.error(`allowlist export failed: ${(e as Error).message}`);
+      process.exit(1);
+    }
+  });
+
+const audit = program.command('audit').description('Inspect the kuroboto decision audit log');
+audit
+  .command('list')
+  .option('--since <duration>', 'e.g. 30s, 5m, 2h, 7d')
+  .option('--cwd <path>', 'filter by cwd')
+  .option('--limit <n>', 'show only the last N entries')
+  .description('Print decisions in human-readable format')
+  .action(async (opts) => {
+    try {
+      await auditList(opts);
+    } catch (e) {
+      console.error(`audit list failed: ${(e as Error).message}`);
+      process.exit(1);
+    }
+  });
+audit
+  .command('export')
+  .option('--since <duration>', 'e.g. 30s, 5m, 2h, 7d')
+  .option('--cwd <path>', 'filter by cwd')
+  .option('--limit <n>', 'show only the last N entries')
+  .description('Print decisions as raw JSONL (one per line)')
+  .action(async (opts) => {
+    try {
+      await auditExport(opts);
+    } catch (e) {
+      console.error(`audit export failed: ${(e as Error).message}`);
       process.exit(1);
     }
   });
