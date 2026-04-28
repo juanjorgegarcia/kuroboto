@@ -64,6 +64,28 @@ Complementary to the daemon's `kuroboto sleeping status` (which only shows sleep
 
 Out of scope of Spec D (which is daemon-side parallelism only). Promote to spec when the parallel sleeps make this annoyance real.
 
+## Sleep state persistence across daemon restart
+
+Witnessed live during Spec C dispatch: daemon was restarted (SIGINT then start) while a sleep session was running. The autonomous Claude child process died with the daemon, M1 work was partially complete in the worktree but not committed, and the daemon came back up with `sleep: idle` — the sleep state was lost entirely.
+
+Today's design treats sleep state as in-memory only:
+
+- `SleepingOrchestrator.session` is a private field on the instance
+- The child process is parented to the daemon — when daemon dies, child dies (or is orphaned without anyone watching its exit)
+- The max-duration timer is `setTimeout` — also lost on restart
+- The worktree + branch + partial work are left behind on disk, but the orchestrator has no way to know they exist
+
+Possible designs:
+
+- **Option A — On-disk state**: write `~/.kuroboto/sleep-state.json` on every state change. On daemon start, attempt resume:
+  - If child PID still alive → re-attach exit handler + re-arm remaining timer
+  - If child dead but worktree dirty → notify user (`⚠️ sleep recovery: <slug> died during daemon restart, worktree at <path> for inspection`); leave for manual cleanup
+  - If everything dead and clean → drop the entry
+- **Option B — Detached child + IPC**: spawn the autonomous Claude detached from the daemon (so it survives daemon restart). Use a unix socket or named pipe for the daemon to re-attach on restart. More complex, more reliable.
+- **Option C — Status quo + better warning**: don't try to resume; just detect orphaned worktrees on daemon start and notify the user so they can clean up manually. Cheapest.
+
+Recommend **A** — modest complexity, big reliability win. Promote to spec if daemon restarts during sleep happen more than once.
+
 ## Smaller follow-ups (from out-of-scope sections of shipped specs)
 
 - **Cached transcript reads** with `mtime` invalidation. Premature optimization at our scale; revisit if `transcript.ts` reads become a bottleneck.
