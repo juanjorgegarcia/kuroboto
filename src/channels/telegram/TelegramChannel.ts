@@ -11,6 +11,8 @@ import type {
   ChannelContext,
   ChannelEventName,
   ChannelEventHandlers,
+  ClearTopicsResult,
+  ClearMessagesResult,
 } from '../Channel.js';
 import {
   TelegramApi,
@@ -20,6 +22,11 @@ import {
 } from './api.js';
 import { Poller } from './poller.js';
 import { TopicManager, pickTopicKey } from './topics.js';
+
+/** Telegram refuses bot deleteMessage on messages older than 48 hours. */
+const BOT_DELETE_WINDOW_MS = 48 * 60 * 60 * 1000;
+/** Cap how many outbound message IDs we keep for chat clear. */
+const SENT_MESSAGE_RING_SIZE = 1000;
 
 export interface TelegramChannelOptions {
   token: string;
@@ -38,6 +45,8 @@ export class TelegramChannel implements Channel {
   };
   private readonly promptMessageIds = new Map<string, { messageId: number; chatId: number }>();
   private awaitingNoteFor: string | null = null;
+  /** Ring buffer of outbound message ids — used by chat clear. Newest last. */
+  private readonly sentMessages: Array<{ messageId: number; sentAt: number }> = [];
 
   constructor(private readonly opts: TelegramChannelOptions) {
     this.api = new TelegramApi(opts.token);
@@ -99,18 +108,118 @@ export class TelegramChannel implements Channel {
     ctx: ChannelContext | undefined,
     send: (threadId: number | undefined) => Promise<number>,
   ): Promise<number> {
-    if (!this.topicManager) return send(undefined);
-    const { key, name } = pickTopicKey(ctx);
-    const threadId = await this.topicManager.resolve(key, name);
-    try {
-      return await send(threadId);
-    } catch (e) {
-      if (!isThreadNotFoundError(e)) throw e;
-      this.opts.logger.warn('topic missing, purging and recreating', { key });
-      await this.topicManager.purge(key);
-      const newId = await this.topicManager.resolve(key, name);
-      return send(newId);
+    let messageId: number;
+    if (!this.topicManager) {
+      messageId = await send(undefined);
+    } else {
+      const { key, name } = pickTopicKey(ctx);
+      const threadId = await this.topicManager.resolve(key, name);
+      try {
+        messageId = await send(threadId);
+      } catch (e) {
+        if (!isThreadNotFoundError(e)) throw e;
+        this.opts.logger.warn('topic missing, purging and recreating', { key });
+        await this.topicManager.purge(key);
+        const newId = await this.topicManager.resolve(key, name);
+        messageId = await send(newId);
+      }
     }
+    this.recordSent(messageId);
+    return messageId;
+  }
+
+  private recordSent(messageId: number): void {
+    this.sentMessages.push({ messageId, sentAt: Date.now() });
+    if (this.sentMessages.length > SENT_MESSAGE_RING_SIZE) {
+      this.sentMessages.splice(0, this.sentMessages.length - SENT_MESSAGE_RING_SIZE);
+    }
+  }
+
+  async clearTopics(opts: {
+    keys?: string[];
+    all?: boolean;
+    except?: string[];
+    dryRun?: boolean;
+  }): Promise<ClearTopicsResult> {
+    if (!this.topicManager) {
+      throw new Error('forumMode is off — use `kuroboto chat clear` instead');
+    }
+    const except = new Set(opts.except ?? []);
+    let targets: Array<{ key: string; threadId: number }>;
+    if (opts.all) {
+      targets = this.topicManager.entries().filter((e) => !except.has(e.key));
+    } else {
+      targets = (opts.keys ?? [])
+        .map((k) => {
+          const threadId = this.topicManager!.get(k);
+          return threadId === undefined ? null : { key: k, threadId };
+        })
+        .filter((x): x is { key: string; threadId: number } => x !== null);
+    }
+    const cleared: string[] = [];
+    const failed: Array<{ key: string; error: string }> = [];
+    if (opts.dryRun) {
+      return { cleared: targets.map((t) => t.key), failed: [] };
+    }
+    for (const t of targets) {
+      try {
+        await this.api.deleteForumTopic(this.opts.chatId, t.threadId);
+        await this.topicManager.purge(t.key);
+        cleared.push(t.key);
+      } catch (e) {
+        const err = (e as Error).message;
+        // Telegram already lost the topic? Purge our cache so it doesn't keep
+        // pointing at a dead thread.
+        if (isThreadNotFoundError(e)) {
+          await this.topicManager.purge(t.key).catch(() => {});
+          cleared.push(t.key);
+        } else {
+          failed.push({ key: t.key, error: err });
+        }
+      }
+    }
+    return { cleared, failed };
+  }
+
+  async clearLastMessages(n: number, opts: { dryRun?: boolean } = {}): Promise<ClearMessagesResult> {
+    if (n <= 0) return { attempted: 0, deleted: 0, outOfWindow: 0 };
+    const slice = this.sentMessages.slice(-n);
+    if (opts.dryRun) {
+      const cutoff = Date.now() - BOT_DELETE_WINDOW_MS;
+      const outOfWindow = slice.filter((m) => m.sentAt < cutoff).length;
+      return { attempted: slice.length, deleted: 0, outOfWindow };
+    }
+    const cutoff = Date.now() - BOT_DELETE_WINDOW_MS;
+    let deleted = 0;
+    let outOfWindow = 0;
+    const survivors: number[] = [];
+    for (const m of slice) {
+      if (m.sentAt < cutoff) {
+        outOfWindow += 1;
+        continue;
+      }
+      try {
+        await this.api.deleteMessage(this.opts.chatId, m.messageId);
+        deleted += 1;
+      } catch (e) {
+        const msg = (e as Error).message;
+        if (/can't be deleted|message to delete not found/i.test(msg)) {
+          outOfWindow += 1;
+        } else {
+          survivors.push(m.messageId);
+          this.opts.logger.warn('deleteMessage failed', { messageId: m.messageId, err: msg });
+        }
+      }
+    }
+    // Drop deleted ids from the tracker so a second `chat clear --last N` does
+    // not re-attempt them.
+    for (const m of slice) {
+      const stillTracked = survivors.includes(m.messageId);
+      if (stillTracked) continue;
+      const idx = this.sentMessages.findIndex((s) => s.messageId === m.messageId);
+      if (idx >= 0) this.sentMessages.splice(idx, 1);
+    }
+    return { attempted: slice.length, deleted, outOfWindow };
   }
 
   private handleUpdate(update: TelegramUpdate): void {

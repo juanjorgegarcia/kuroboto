@@ -146,6 +146,50 @@ export class TelegramApi {
     }
   }
 
+  async deleteMessage(chatId: number, messageId: number, timeoutMs = 5_000): Promise<void> {
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), timeoutMs);
+    try {
+      const res = await fetch(this.url('deleteMessage'), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ chat_id: chatId, message_id: messageId }),
+        signal: ctrl.signal,
+      });
+      const json = (await res.json().catch(() => null)) as
+        | { ok: boolean; description?: string }
+        | null;
+      if (!res.ok || !json?.ok) {
+        const desc = json?.description ?? `HTTP ${res.status}`;
+        throw new ChannelError(`telegram: ${desc}`);
+      }
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
+  async deleteForumTopic(chatId: number, messageThreadId: number, timeoutMs = 10_000): Promise<void> {
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), timeoutMs);
+    try {
+      const res = await fetch(this.url('deleteForumTopic'), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ chat_id: chatId, message_thread_id: messageThreadId }),
+        signal: ctrl.signal,
+      });
+      const json = (await res.json().catch(() => null)) as
+        | { ok: boolean; description?: string }
+        | null;
+      if (!res.ok || !json?.ok) {
+        const desc = json?.description ?? `HTTP ${res.status}`;
+        throw new ChannelError(`telegram: ${desc}`);
+      }
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
   async createForumTopic(chatId: number, name: string, timeoutMs = 10_000): Promise<number> {
     const ctrl = new AbortController();
     const timer = setTimeout(() => ctrl.abort(), timeoutMs);

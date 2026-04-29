@@ -158,6 +158,16 @@ export class TopicManager {
     this.opts.audit?.({ source: 'topic-purged', key });
   }
 
+  /** Snapshot of every cached key + thread-id pair. */
+  entries(): Array<{ key: string; threadId: number }> {
+    return [...this.cache.entries()].map(([key, threadId]) => ({ key, threadId }));
+  }
+
+  /** Returns the cached thread-id for a key, or undefined when absent. */
+  get(key: string): number | undefined {
+    return this.cache.get(key);
+  }
+
   private async flushToDisk(): Promise<void> {
     const obj: Record<string, number> = {};
     for (const [k, v] of this.cache) obj[k] = v;

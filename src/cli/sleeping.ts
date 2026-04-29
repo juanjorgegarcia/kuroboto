@@ -2,8 +2,8 @@ import fsp from 'node:fs/promises';
 import path from 'node:path';
 import chalk from 'chalk';
 import prompts from 'prompts';
-import { loadConfig } from '../config/load.js';
 import { parseDuration } from '../daemon/gaming.js';
+import { kuroFetch } from './http.js';
 
 interface StartOpts {
   prompt?: string;
@@ -38,51 +38,37 @@ interface CapacityErrorBody {
 }
 
 async function postStart(body: { repo: string; prompt?: string; plan?: string; maxDurationMs?: number }) {
-  const config = await loadConfig();
-  const res = await fetch(`http://127.0.0.1:${config.daemon.port}/v1/sleeping`, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'X-Kuroboto-Token': config.daemon.authToken,
-    },
-    body: JSON.stringify(body),
-  });
+  const res = await kuroFetch<{ slug: string; branch: string; worktreePath: string } | CapacityErrorBody | { error?: string }>(
+    '/v1/sleeping',
+    { method: 'POST', body },
+  );
   if (!res.ok) {
     if (res.status === 429) {
-      const cap = (await res.json().catch(() => ({}))) as CapacityErrorBody;
-      printCapacityReached(cap);
+      printCapacityReached(res.body as CapacityErrorBody);
       throw new Error('capacity reached');
     }
-    const err = (await res.json().catch(() => ({}))) as { error?: string };
-    throw new Error(err.error ?? `daemon HTTP ${res.status}`);
+    const err = res.body as { error?: string };
+    throw new Error(err?.error ?? `daemon HTTP ${res.status}`);
   }
-  return (await res.json()) as { slug: string; branch: string; worktreePath: string };
+  return res.body as { slug: string; branch: string; worktreePath: string };
 }
 
 async function getStatus(): Promise<SleepingSnapshot> {
-  const config = await loadConfig();
-  const res = await fetch(`http://127.0.0.1:${config.daemon.port}/v1/sleeping`, {
-    headers: { 'X-Kuroboto-Token': config.daemon.authToken },
-  });
+  const res = await kuroFetch<SleepingSnapshot>('/v1/sleeping');
   if (!res.ok) throw new Error(`daemon HTTP ${res.status}`);
-  return (await res.json()) as SleepingSnapshot;
+  return res.body;
 }
 
 async function postCancel(body: { slug?: string; all?: boolean }): Promise<{ cancelled: string[] }> {
-  const config = await loadConfig();
-  const res = await fetch(`http://127.0.0.1:${config.daemon.port}/v1/sleeping/cancel`, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'X-Kuroboto-Token': config.daemon.authToken,
-    },
-    body: JSON.stringify(body),
-  });
+  const res = await kuroFetch<{ cancelled: string[] } | { error?: string }>(
+    '/v1/sleeping/cancel',
+    { method: 'POST', body },
+  );
   if (!res.ok) {
-    const err = (await res.json().catch(() => ({}))) as { error?: string };
-    throw new Error(err.error ?? `daemon HTTP ${res.status}`);
+    const err = res.body as { error?: string };
+    throw new Error(err?.error ?? `daemon HTTP ${res.status}`);
   }
-  return (await res.json()) as { cancelled: string[] };
+  return res.body as { cancelled: string[] };
 }
 
 function formatRemaining(snap: SessionSnap): string {

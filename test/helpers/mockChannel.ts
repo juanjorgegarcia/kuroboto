@@ -3,6 +3,8 @@ import type {
   ChannelContext,
   ChannelEventHandlers,
   ChannelEventName,
+  ClearTopicsResult,
+  ClearMessagesResult,
 } from '../../src/channels/Channel.js';
 import type { PromptRequest, QuestionRequest, Decision } from '../../src/core/types.js';
 
@@ -71,6 +73,24 @@ export class MockChannel implements Channel {
 
   on<K extends ChannelEventName>(event: K, handler: ChannelEventHandlers[K]): void {
     this.handlers[event].push(handler);
+  }
+
+  /** Stub config — set by tests to make clearTopics / clearLastMessages testable. */
+  public clearTopicsImpl: ((opts: { keys?: string[]; all?: boolean; except?: string[]; dryRun?: boolean }) => Promise<ClearTopicsResult>) | undefined;
+  public clearLastMessagesImpl: ((n: number, opts?: { dryRun?: boolean }) => Promise<ClearMessagesResult>) | undefined;
+  public clearTopicsCalls: Array<{ keys?: string[]; all?: boolean; except?: string[]; dryRun?: boolean }> = [];
+  public clearLastMessagesCalls: Array<{ n: number; dryRun?: boolean }> = [];
+
+  async clearTopics(opts: { keys?: string[]; all?: boolean; except?: string[]; dryRun?: boolean }): Promise<ClearTopicsResult> {
+    this.clearTopicsCalls.push(opts);
+    if (this.clearTopicsImpl) return this.clearTopicsImpl(opts);
+    return { cleared: opts.keys ?? [], failed: [] };
+  }
+
+  async clearLastMessages(n: number, opts: { dryRun?: boolean } = {}): Promise<ClearMessagesResult> {
+    this.clearLastMessagesCalls.push({ n, dryRun: opts.dryRun });
+    if (this.clearLastMessagesImpl) return this.clearLastMessagesImpl(n, opts);
+    return { attempted: n, deleted: n, outOfWindow: 0 };
   }
 
   emitDecision(requestId: string, decision: Decision): void {

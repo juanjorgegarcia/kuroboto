@@ -34,6 +34,22 @@ export interface ChannelContext {
   system?: boolean;
 }
 
+export interface ClearTopicsResult {
+  /** Topic keys that were successfully cleared. */
+  cleared: string[];
+  /** Topic keys that errored out (Telegram refused, network, etc.). */
+  failed: Array<{ key: string; error: string }>;
+}
+
+export interface ClearMessagesResult {
+  /** Messages the daemon attempted to delete. */
+  attempted: number;
+  /** Successfully deleted messages. */
+  deleted: number;
+  /** Messages outside the 48h bot delete window — Telegram refuses these. */
+  outOfWindow: number;
+}
+
 export interface Channel {
   start(): Promise<void>;
   stop(): Promise<void>;
@@ -43,4 +59,11 @@ export interface Channel {
    *  message id used to correlate the user's reply back to this question. */
   sendQuestion(req: QuestionRequest, ctx?: ChannelContext): Promise<{ sentMessageId: string }>;
   on<K extends ChannelEventName>(event: K, handler: ChannelEventHandlers[K]): void;
+  /**
+   * Clear forum topics by key (or all of them, except optional preserved keys).
+   * Implementations without a forum surface (DM mode) reject the request.
+   */
+  clearTopics?(opts: { keys?: string[]; all?: boolean; except?: string[]; dryRun?: boolean }): Promise<ClearTopicsResult>;
+  /** Delete the last N outbound messages tracked by the channel. */
+  clearLastMessages?(n: number, opts?: { dryRun?: boolean }): Promise<ClearMessagesResult>;
 }
