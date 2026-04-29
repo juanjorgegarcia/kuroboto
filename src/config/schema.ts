@@ -34,9 +34,9 @@ export const PolicyConfig = z.object({
   permissionMatchers: z.array(z.string()).default(['Bash', 'Edit', 'Write']),
   rememberGranularity: z.enum(['tight', 'permissive']).default('tight'),
   gamingAlwaysAsk: z.array(z.string()).default([]),
-  sleepMaxDurationMs: z.number().int().min(60_000).default(2 * 60 * 60 * 1000),
+  sleepMaxDurationMs: z.number().int().min(60_000).default(8 * 60 * 60 * 1000),
   sleepWorktreeDir: z.string().default('~/.kuroboto/worktrees'),
-  maxConcurrentSleeps: z.number().int().min(1).default(3),
+  maxConcurrentSleeps: z.number().int().min(1).default(6),
   failOpen: z.boolean(),
 });
 
