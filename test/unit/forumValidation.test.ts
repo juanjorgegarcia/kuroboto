@@ -49,6 +49,19 @@ describe('validateBotPermissions', () => {
     await expect(validateBotPermissions(api, -100123)).rejects.toThrow(/Manage Topics/i);
   });
 
+  it('resolves when bot is the group creator (creator implies all permissions)', async () => {
+    // creator = group owner. Per Telegram API, the owner has implicit
+    // can_manage_topics regardless of the field's presence.
+    const api = fakeApi({ member: { status: 'creator' } });
+    await expect(validateBotPermissions(api, -100123)).resolves.toBeUndefined();
+  });
+
+  it('resolves when bot is creator even with can_manage_topics: false', async () => {
+    // Creator's can_manage_topics flag is irrelevant; ownership grants the capability.
+    const api = fakeApi({ member: { status: 'creator', can_manage_topics: false } });
+    await expect(validateBotPermissions(api, -100123)).resolves.toBeUndefined();
+  });
+
   it('wraps getMe errors with context', async () => {
     const api = fakeApi({ meErr: new Error('connect ECONNREFUSED') });
     await expect(validateBotPermissions(api, -100123)).rejects.toThrow(

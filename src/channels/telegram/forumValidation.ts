@@ -34,14 +34,18 @@ export async function validateBotPermissions(
       `forumMode validation failed — getChatMember error: ${(e as Error).message}`,
     );
   }
-  if (member.status !== 'administrator') {
+  // 'creator' = group owner, also has full topic-management capability per
+  // Telegram API docs. Only reject when the bot is a plain member / left / etc.
+  if (member.status !== 'administrator' && member.status !== 'creator') {
     throw new ChannelError(
       `forumMode requires the bot to be an administrator of chat ${chatId} ` +
         `(current status: ${member.status}). Open the supergroup settings ` +
         `→ Administrators, add the bot, and enable "Manage Topics".`,
     );
   }
-  if (member.can_manage_topics !== true) {
+  // Group creators implicitly have all permissions; only check the explicit
+  // can_manage_topics flag for non-creator administrators.
+  if (member.status === 'administrator' && member.can_manage_topics !== true) {
     throw new ChannelError(
       `forumMode requires the bot's "Manage Topics" admin permission to be ` +
         `granted in chat ${chatId}. Open the supergroup settings → ` +
