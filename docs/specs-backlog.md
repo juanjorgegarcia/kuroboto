@@ -2,31 +2,10 @@
 
 Loose collection of feature ideas worth a spec eventually. Not prioritized; promote to `docs/specs/<name>.md` when ready to design properly.
 
-## Deferred: Spec D (parallel sleep sessions)
+## Active queue (specced, ready to dispatch)
 
-`docs/specs/parallel-sleeps.md` is fully designed but deferred behind Spec E (PTY injection). Reason: parallel-sleeps is a useful optimization, but Q&A working without tmux unblocks the **actual usage** of kuroboto-when-away. Rebump to active queue after Spec E ships.
-
-## Telegram supergroup + topics (one topic per session)
-
-> Pinned: planned next, after `prompt-context.md` + `prompt-freetext-qa.md` ship.
-
-Current bot setup is a 1:1 DM. With multiple Claude sessions in flight (multiple machines, multiple repos, sleep + interactive in parallel), the chat becomes a flat stream where messages from different sessions interleave.
-
-Telegram **supergroups with forum mode** allow a chat to be split into named topics (threads), each with its own scroll, name, and notification settings. Move the bot's destination from DM to a private supergroup (only the user in it). Then create one topic per `session_id` (or per `cwd`/sleep slug), so messages from each session live in their own thread.
-
-**Sketch:**
-- New `channel.telegram.chatType = 'supergroup'` with `forum_topics: true`
-- Daemon maintains an in-memory map `session_id → topic_id`
-- On first message of a session, create topic via `createForumTopic` API with name from session header (e.g. `kuroboto / "fix the bot UX"`)
-- All subsequent messages for that session use `message_thread_id`
-- On session end (Stop hook + idle threshold), optionally close/archive the topic
-
-**Open questions:**
-- Topic naming when first message is a permission prompt (no first-user-msg yet)? Maybe lazy-rename when transcript is readable
-- TTL/cleanup policy for orphan topics
-- Migration path from DM mode (config flag, manual setup of supergroup, BotFather permissions)
-
-This unlocks multi-Claude UX naturally and reduces the need for tmux multi-mapping (Spec B's open follow-up).
+- **Spec D — parallel sleep sessions** (`docs/specs/parallel-sleeps.md`). Was deferred behind Spec E (PTY injection); E shipped in PR #12, so D is now unblocked. Will need a quick rebase since Spec E touched `sleeping.ts` for late-binding integration.
+- **Spec F — Telegram supergroup + topics** (`docs/specs/supergroup-topics.md`). Designed in the same session as Spec E. Independent of D in terms of code — they touch different layers (D = `sleeping.ts` + cli; F = `TelegramChannel` + topic manager + every channel call site). Both can dispatch sequentially or even in parallel with care.
 
 ## Extensible sleep finish-hooks (Level 2 of desktop notifications)
 
