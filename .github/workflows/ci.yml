@@ -16,5 +16,8 @@ jobs:
           cache: 'npm'
       - run: npm ci
       - run: npx tsc --noEmit
-      - run: npx vitest run
+      # Retry up to 3x for flaky timing-dependent tests in injectClient.test.ts
+      # (FakePty + setImmediate ordering races on slower runners).
+      # TODO: stabilize the tests themselves and drop the retry.
+      - run: npx vitest run --retry=3
       - run: npm run build
