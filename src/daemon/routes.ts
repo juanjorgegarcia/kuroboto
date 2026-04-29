@@ -20,6 +20,7 @@ import { injectViaPty } from '../inject/pty.js';
 import type { SessionSnap } from './sleeping.js';
 import { topicContextFromHook } from './topicContext.js';
 import type { ChannelContext } from '../channels/Channel.js';
+import { SYSTEM_TOPIC_KEY } from '../channels/telegram/topics.js';
 
 export function registerRoutes(app: Express, ctx: DaemonContext): void {
   const fmtCtx = (): PromptFormatContext => ({
@@ -178,6 +179,51 @@ export function registerRoutes(app: Express, ctx: DaemonContext): void {
       ctx.logger.warn('saveMode failed', { err: (e as Error).message });
     });
     res.json({ ok: true, mode: ctx.state.mode });
+  });
+
+  app.post('/v1/topics/clear', async (req: Request, res: Response) => {
+    const body = (req.body ?? {}) as { slug?: unknown; all?: unknown; dryRun?: unknown };
+    if (!ctx.channel.clearTopics) {
+      res.status(400).json({ error: 'channel does not support forum topics' });
+      return;
+    }
+    const opts: { keys?: string[]; all?: boolean; except?: string[]; dryRun?: boolean } = {};
+    if (typeof body.slug === 'string' && body.slug) {
+      opts.keys = [body.slug];
+    } else if (body.all === true) {
+      opts.all = true;
+      opts.except = [SYSTEM_TOPIC_KEY];
+    } else {
+      res.status(400).json({ error: 'either slug (string) or all (true) required' });
+      return;
+    }
+    if (body.dryRun === true) opts.dryRun = true;
+    try {
+      const result = await ctx.channel.clearTopics(opts);
+      res.json({ ok: true, ...result, dryRun: opts.dryRun === true });
+    } catch (e) {
+      res.status(400).json({ error: (e as Error).message });
+    }
+  });
+
+  app.post('/v1/chat/clear', async (req: Request, res: Response) => {
+    const body = (req.body ?? {}) as { last?: unknown; dryRun?: unknown };
+    if (!ctx.channel.clearLastMessages) {
+      res.status(400).json({ error: 'channel does not support message deletion' });
+      return;
+    }
+    if (typeof body.last !== 'number' || !Number.isInteger(body.last) || body.last <= 0) {
+      res.status(400).json({ error: 'last must be a positive integer' });
+      return;
+    }
+    try {
+      const result = await ctx.channel.clearLastMessages(body.last, {
+        dryRun: body.dryRun === true,
+      });
+      res.json({ ok: true, ...result, dryRun: body.dryRun === true });
+    } catch (e) {
+      res.status(400).json({ error: (e as Error).message });
+    }
   });
 
   app.post('/v1/heartbeat', (req: Request, res: Response) => {

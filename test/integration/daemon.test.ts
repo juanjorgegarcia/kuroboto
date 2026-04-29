@@ -481,6 +481,115 @@ describe('sleep mode endpoints', () => {
   });
 });
 
+describe('topics + chat clear endpoints', () => {
+  it('POST /v1/topics/clear { slug } forwards keys: [slug]', async () => {
+    const { ctx, channel } = makeContext();
+    channel.clearTopicsImpl = async (opts) => ({ cleared: opts.keys ?? [], failed: [] });
+    const res = await request(createServer(ctx))
+      .post('/v1/topics/clear')
+      .set('X-Kuroboto-Token', TEST_TOKEN)
+      .send({ slug: 'feat-x' });
+    expect(res.status).toBe(200);
+    expect(res.body).toMatchObject({ ok: true, cleared: ['feat-x'], failed: [], dryRun: false });
+    expect(channel.clearTopicsCalls).toHaveLength(1);
+    expect(channel.clearTopicsCalls[0]).toEqual({ keys: ['feat-x'] });
+  });
+
+  it('POST /v1/topics/clear { all: true } sets except: [kuroboto-system]', async () => {
+    const { ctx, channel } = makeContext();
+    channel.clearTopicsImpl = async (opts) => ({
+      cleared: opts.all ? ['a', 'b'] : [],
+      failed: [],
+    });
+    const res = await request(createServer(ctx))
+      .post('/v1/topics/clear')
+      .set('X-Kuroboto-Token', TEST_TOKEN)
+      .send({ all: true });
+    expect(res.status).toBe(200);
+    expect(channel.clearTopicsCalls[0]).toEqual({ all: true, except: ['kuroboto-system'] });
+  });
+
+  it('POST /v1/topics/clear with empty body returns 400', async () => {
+    const { ctx } = makeContext();
+    const res = await request(createServer(ctx))
+      .post('/v1/topics/clear')
+      .set('X-Kuroboto-Token', TEST_TOKEN)
+      .send({});
+    expect(res.status).toBe(400);
+    expect(res.body.error).toMatch(/slug.*all/);
+  });
+
+  it('POST /v1/topics/clear { dryRun: true } passes dryRun through', async () => {
+    const { ctx, channel } = makeContext();
+    const res = await request(createServer(ctx))
+      .post('/v1/topics/clear')
+      .set('X-Kuroboto-Token', TEST_TOKEN)
+      .send({ slug: 'foo', dryRun: true });
+    expect(res.status).toBe(200);
+    expect(res.body.dryRun).toBe(true);
+    expect(channel.clearTopicsCalls[0].dryRun).toBe(true);
+  });
+
+  it('POST /v1/topics/clear returns 400 when channel does not implement clearTopics', async () => {
+    const { ctx, channel } = makeContext();
+    // remove the implementation defined on MockChannel
+    (channel as unknown as { clearTopics?: unknown }).clearTopics = undefined;
+    const res = await request(createServer(ctx))
+      .post('/v1/topics/clear')
+      .set('X-Kuroboto-Token', TEST_TOKEN)
+      .send({ slug: 'foo' });
+    expect(res.status).toBe(400);
+    expect(res.body.error).toMatch(/forum topics/);
+  });
+
+  it('POST /v1/chat/clear { last: 10 } forwards last and returns counts', async () => {
+    const { ctx, channel } = makeContext();
+    channel.clearLastMessagesImpl = async (n) => ({ attempted: n, deleted: n - 2, outOfWindow: 2 });
+    const res = await request(createServer(ctx))
+      .post('/v1/chat/clear')
+      .set('X-Kuroboto-Token', TEST_TOKEN)
+      .send({ last: 10 });
+    expect(res.status).toBe(200);
+    expect(res.body).toMatchObject({ ok: true, attempted: 10, deleted: 8, outOfWindow: 2, dryRun: false });
+    expect(channel.clearLastMessagesCalls).toHaveLength(1);
+    expect(channel.clearLastMessagesCalls[0]).toEqual({ n: 10, dryRun: false });
+  });
+
+  it('POST /v1/chat/clear rejects last <= 0', async () => {
+    const { ctx } = makeContext();
+    const res = await request(createServer(ctx))
+      .post('/v1/chat/clear')
+      .set('X-Kuroboto-Token', TEST_TOKEN)
+      .send({ last: 0 });
+    expect(res.status).toBe(400);
+  });
+
+  it('POST /v1/chat/clear rejects non-integer last', async () => {
+    const { ctx } = makeContext();
+    const res = await request(createServer(ctx))
+      .post('/v1/chat/clear')
+      .set('X-Kuroboto-Token', TEST_TOKEN)
+      .send({ last: 'ten' });
+    expect(res.status).toBe(400);
+  });
+
+  it('POST /v1/chat/clear { dryRun: true } passes dryRun through', async () => {
+    const { ctx, channel } = makeContext();
+    channel.clearLastMessagesImpl = async (n, opts) => ({
+      attempted: n,
+      deleted: 0,
+      outOfWindow: opts?.dryRun ? 1 : 0,
+    });
+    const res = await request(createServer(ctx))
+      .post('/v1/chat/clear')
+      .set('X-Kuroboto-Token', TEST_TOKEN)
+      .send({ last: 5, dryRun: true });
+    expect(res.status).toBe(200);
+    expect(res.body.dryRun).toBe(true);
+    expect(channel.clearLastMessagesCalls[0]).toEqual({ n: 5, dryRun: true });
+  });
+});
+
 describe('allowlist match (daemon-side)', () => {
   let tmpRepo: string;
 

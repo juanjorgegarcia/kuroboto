@@ -12,6 +12,10 @@ import { allowlistList, allowlistExport } from './allowlist.js';
 import { auditList, auditExport } from './audit.js';
 import { gamingOnCommand, gamingOffCommand, gamingStatusCommand } from './gaming.js';
 import { sleepingStartCommand, sleepingCancelCommand, sleepingStatusCommand } from './sleeping.js';
+import { sleepingCleanupCommand } from './sleepingCleanup.js';
+import { topicsClearCommand } from './topicsClear.js';
+import { chatClearCommand } from './chatClear.js';
+import { setDebug } from './http.js';
 
 // Special-case: `kuroboto claude [...args]` forwards everything raw to Claude Code.
 // Commander would otherwise eat global flags like --version / --help before they
@@ -19,6 +23,14 @@ import { sleepingStartCommand, sleepingCancelCommand, sleepingStatusCommand } fr
 const claudeIdx = process.argv.indexOf('claude');
 const claudeShortcut =
   claudeIdx >= 2 && process.argv.slice(2, claudeIdx).every((a) => !a.startsWith('-'));
+
+// `--debug` lives on every command (including subcommands) — scan argv once
+// up front so it's effective even when passed after a subcommand name. Strip
+// the flag from argv afterward so per-subcommand parsing doesn't choke on it.
+if (process.argv.includes('--debug')) {
+  setDebug(true);
+  process.argv = process.argv.filter((a) => a !== '--debug');
+}
 
 if (claudeShortcut) {
   const forward = process.argv.slice(claudeIdx + 1);
@@ -33,7 +45,8 @@ const program = new Command();
 program
   .name('kuroboto')
   .description('Respond to Claude Code prompts from your phone via chat (Telegram first).')
-  .version('0.1.0');
+  .version('0.1.0')
+  .option('--debug', 'trace daemon HTTP requests + responses on stderr', false);
 
 program
   .command('init')
@@ -218,6 +231,51 @@ sleeping
       await sleepingStatusCommand();
     } catch (e) {
       console.error(`sleeping status failed: ${(e as Error).message}`);
+      process.exit(1);
+    }
+  });
+sleeping
+  .command('cleanup')
+  .description('Remove worktrees + local branches + stale remotes for already-merged sleep PRs')
+  .option('--dry-run', 'list what would be cleaned without doing it', false)
+  .option('--yes', 'skip confirmation prompt', false)
+  .action(async (opts: { dryRun?: boolean; yes?: boolean }) => {
+    try {
+      await sleepingCleanupCommand(opts);
+    } catch (e) {
+      console.error(`sleeping cleanup failed: ${(e as Error).message}`);
+      process.exit(1);
+    }
+  });
+
+const topics = program.command('topics').description('Manage Telegram forum topics (supergroup/forum mode)');
+topics
+  .command('clear [slug]')
+  .description('Delete a topic by slug (or every topic with --all). System topic is preserved.')
+  .option('--all', 'clear every topic except kuroboto-system', false)
+  .option('--dry-run', 'list what would be deleted without doing it', false)
+  .option('--yes', 'skip confirmation prompt', false)
+  .action(async (slug: string | undefined, opts: { all?: boolean; dryRun?: boolean; yes?: boolean }) => {
+    try {
+      await topicsClearCommand(slug, opts);
+    } catch (e) {
+      console.error(`topics clear failed: ${(e as Error).message}`);
+      process.exit(1);
+    }
+  });
+
+const chat = program.command('chat').description('Manage Telegram chat messages');
+chat
+  .command('clear')
+  .description('Delete the last N outbound bot messages (bounded by Telegram\'s 48h delete window)')
+  .option('--last <n>', 'how many recent messages to delete')
+  .option('--dry-run', 'list what would be deleted without doing it', false)
+  .option('--yes', 'skip confirmation prompt', false)
+  .action(async (opts: { last?: string; dryRun?: boolean; yes?: boolean }) => {
+    try {
+      await chatClearCommand(opts);
+    } catch (e) {
+      console.error(`chat clear failed: ${(e as Error).message}`);
       process.exit(1);
     }
   });

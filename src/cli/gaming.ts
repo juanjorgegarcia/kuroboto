@@ -1,6 +1,6 @@
 import chalk from 'chalk';
-import { loadConfig } from '../config/load.js';
 import { parseDuration } from '../daemon/gaming.js';
+import { kuroFetch } from './http.js';
 
 interface GamingSnapshot {
   active: boolean;
@@ -8,36 +8,22 @@ interface GamingSnapshot {
 }
 
 async function postGaming(body: { on: boolean; durationMs?: number }): Promise<GamingSnapshot> {
-  const config = await loadConfig();
-  const ctrl = new AbortController();
-  const timer = setTimeout(() => ctrl.abort(), 2_000);
-  try {
-    const res = await fetch(`http://127.0.0.1:${config.daemon.port}/v1/gaming`, {
-      method: 'PUT',
-      headers: {
-        'Content-Type': 'application/json',
-        'X-Kuroboto-Token': config.daemon.authToken,
-      },
-      body: JSON.stringify(body),
-      signal: ctrl.signal,
-    });
-    clearTimeout(timer);
-    if (!res.ok) throw new Error(`daemon HTTP ${res.status}`);
-    const json = (await res.json()) as { ok: boolean; active: boolean; until: number | null };
-    return { active: json.active, until: json.until };
-  } catch (e) {
-    clearTimeout(timer);
-    throw new Error(`daemon offline or unreachable: ${(e as Error).message}`);
+  const res = await kuroFetch<{ ok: boolean; active: boolean; until: number | null } | { error?: string }>(
+    '/v1/gaming',
+    { method: 'PUT', body, timeoutMs: 2_000 },
+  );
+  if (!res.ok) {
+    const err = res.body as { error?: string };
+    throw new Error(err?.error ?? `daemon HTTP ${res.status}`);
   }
+  const json = res.body as { active: boolean; until: number | null };
+  return { active: json.active, until: json.until };
 }
 
 async function getGaming(): Promise<GamingSnapshot> {
-  const config = await loadConfig();
-  const res = await fetch(`http://127.0.0.1:${config.daemon.port}/v1/gaming`, {
-    headers: { 'X-Kuroboto-Token': config.daemon.authToken },
-  });
+  const res = await kuroFetch<GamingSnapshot>('/v1/gaming');
   if (!res.ok) throw new Error(`daemon HTTP ${res.status}`);
-  return (await res.json()) as GamingSnapshot;
+  return res.body;
 }
 
 function formatRemaining(untilMs: number): string {
