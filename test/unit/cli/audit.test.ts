@@ -5,6 +5,11 @@ import type { AuditEntry } from '../../../src/daemon/audit.js';
 
 import { auditList, auditExport } from '../../../src/cli/audit.js';
 
+// `audit list/export` reads `~/.kuroboto/audit.jsonl` directly (same pattern
+// as `allowlist`) — there's no `/v1/audit` HTTP route. That's intentional so
+// audit history stays inspectable when the daemon is offline. Tests therefore
+// stub `readAudit` rather than `fetch`.
+
 function entry(o: Partial<AuditEntry> = {}): AuditEntry {
   return {
     ts: '2026-04-28T10:00:00.000Z',

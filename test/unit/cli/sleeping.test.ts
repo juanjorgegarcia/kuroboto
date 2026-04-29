@@ -5,6 +5,7 @@ import os from 'node:os';
 import prompts from 'prompts';
 import {
   captureIO,
+  expectAuthHeader,
   jsonResponse,
   runWithExitCapture,
   stubFetch,
@@ -59,13 +60,14 @@ describe('cli/sleeping', () => {
   });
 
   describe('status', () => {
-    it('idle: prints "sleep: idle (cap 6)"', async () => {
+    it('idle: prints "sleep: idle (cap 6)" and sends auth header', async () => {
       fetchStub = stubFetch(() => jsonResponse({ active: [], capacity: 6 }));
       await sleepingStatusCommand();
       expect(io.out()).toContain('sleep: idle (cap 6)');
       expect(fetchStub.calls).toHaveLength(1);
       expect(fetchStub.calls[0]!.url).toContain('/v1/sleeping');
       expect(fetchStub.calls[0]!.method).toBe('GET');
+      expectAuthHeader(fetchStub);
     });
 
     it('one active: prints count line + slug bullet', async () => {

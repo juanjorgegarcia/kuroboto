@@ -127,12 +127,14 @@ expect(exitSpy).toHaveBeenCalledWith(0);
 
 ### `audit.test.ts` (~6 tests)
 
-- `list` (no args) → GET /v1/audit, prints last 10 entries (default limit)
-- `list --since 5m` → query param `sinceMs=300000`
-- `list --cwd /path` → query param `cwd=/path`
-- `list --limit 50` → query param `limit=50`
-- `export` → GET, prints raw JSONL to stdout (machine-readable)
-- daemon offline → fetch fails → exits 1
+(Like `allowlist`, this command reads filesystem directly — `~/.kuroboto/audit.jsonl` — instead of going through the daemon. That keeps `kuroboto audit list` usable for diagnostics even when the daemon is offline. Tests stub `readAudit` rather than `fetch`.)
+
+- `list` (no args) → calls `readAudit({})`, prints last entries
+- `list --since 5m` → forwards `sinceMs=300000`
+- `list --cwd /path` → forwards `cwd=/path`
+- `list --limit 50` → forwards `limit=50`
+- `export` → prints raw JSONL to stdout (machine-readable)
+- empty log → prints `(sem entradas)` placeholder
 
 ### `allowlist.test.ts` (~5 tests)
 
@@ -146,10 +148,12 @@ expect(exitSpy).toHaveBeenCalledWith(0);
 
 ### `mode.test.ts` (~4 tests)
 
-- `kuroboto here` → PUT /v1/mode `{mode: 'here'}`, prints "mode: here"
-- `kuroboto away` → PUT /v1/mode `{mode: 'away'}`, prints "mode: away"
-- daemon offline (here) → exits 1
-- daemon returns 4xx → prints error from body
+(`mode` writes to `~/.kuroboto/state.json` first, then best-effort PUTs `/v1/mode` so the running daemon picks up the change immediately. Daemon-offline is a soft failure here — the local change persists and the next daemon start will read it.)
+
+- `kuroboto here` → saves locally, PUTs `/v1/mode {mode: 'here'}`, prints "mode set to here"
+- `kuroboto away` → saves locally, PUTs `/v1/mode {mode: 'away'}`, prints "mode set to away"
+- daemon offline (here) → still saves locally and reports `daemon offline` fallback (no exit 1)
+- daemon returns non-2xx → still saves locally, includes HTTP code in fallback message
 
 ## Behavior details / conventions
 

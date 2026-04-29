@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import {
   captureIO,
+  expectAuthHeader,
   jsonResponse,
   runWithExitCapture,
   stubFetch,
@@ -30,7 +31,7 @@ describe('cli/gaming', () => {
     vi.restoreAllMocks();
   });
 
-  it('on (no duration): PUT {on:true}, prints "gaming on (no timer ...)"', async () => {
+  it('on (no duration): PUT {on:true}, prints "gaming on (no timer ...)" and sends auth header', async () => {
     fetchStub = stubFetch(() =>
       jsonResponse({ ok: true, active: true, until: null }),
     );
@@ -42,6 +43,7 @@ describe('cli/gaming', () => {
     expect(call.body).toEqual({ on: true, durationMs: undefined });
     expect(io.out()).toContain('gaming on');
     expect(io.out()).toContain('no timer');
+    expectAuthHeader(fetchStub);
   });
 
   it('on 15m: durationMs=900_000, prints remaining', async () => {
@@ -112,10 +114,13 @@ describe('cli/gaming', () => {
     expect(out).toMatch(/\d+m/);
   });
 
-  it('daemon offline (on): fetch rejects → throws daemon-down message', async () => {
+  it('daemon offline (on): kuroFetch prints daemon-down message and exits 1', async () => {
+    const err = Object.assign(new Error('connect ECONNREFUSED'), { code: 'ECONNREFUSED' });
     stubFetch(() => {
-      throw new Error('ECONNREFUSED');
+      throw err;
     });
-    await expect(gamingOnCommand()).rejects.toThrow(/daemon offline|unreachable/i);
+    const r = await runWithExitCapture(() => gamingOnCommand());
+    expect(r.exitCode).toBe(1);
+    expect(io.err()).toMatch(/daemon offline/i);
   });
 });

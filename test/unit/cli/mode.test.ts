@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import {
   captureIO,
+  expectAuthHeader,
   jsonResponse,
   stubFetch,
   TEST_CONFIG,
@@ -28,7 +29,7 @@ describe('cli/mode', () => {
     vi.restoreAllMocks();
   });
 
-  it('here: persists mode locally, PUTs /v1/mode, prints "mode set to here"', async () => {
+  it('here: persists mode locally, PUTs /v1/mode, prints "mode set to here" with auth header', async () => {
     fetchStub = stubFetch(() => jsonResponse({ ok: true }));
     await hereCommand();
     expect(saveModeSpy).toHaveBeenCalledWith('here');
@@ -37,6 +38,7 @@ describe('cli/mode', () => {
     expect(call.url).toContain('/v1/mode');
     expect(call.body).toEqual({ mode: 'here' });
     expect(io.out()).toContain('mode set to here');
+    expectAuthHeader(fetchStub);
   });
 
   it('away: persists mode locally, PUTs /v1/mode, prints "mode set to away"', async () => {

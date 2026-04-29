@@ -1,4 +1,4 @@
-import { vi, type MockInstance } from 'vitest';
+import { vi, expect } from 'vitest';
 import type { ConfigT } from '../../src/config/schema.js';
 
 const ANSI_RE = /\x1b\[[0-9;]*m/g;
@@ -100,22 +100,15 @@ export function captureIO(): CapturedIO {
   };
 }
 
-export interface ExitCapture {
-  exitSpy: MockInstance;
-  /** Last code passed to process.exit, or null if never called. */
-  code(): number | null;
-}
-
-/** Replace process.exit with a stub that throws `__exit__:N` to short-circuit. */
-export function stubExit(): ExitCapture {
-  let lastCode: number | null = null;
-  const exitSpy = vi
-    .spyOn(process, 'exit')
-    .mockImplementation(((code?: number) => {
-      lastCode = code ?? 0;
-      throw new Error(`__exit__:${lastCode}`);
-    }) as never);
-  return { exitSpy, code: () => lastCode };
+/**
+ * Asserts every captured fetch carried the daemon auth header. Cheap insurance
+ * that future refactors don't drop the X-Kuroboto-Token requirement (which the
+ * daemon enforces on every authed call per AGENTS.md).
+ */
+export function expectAuthHeader(stub: FetchStub): void {
+  for (const call of stub.calls) {
+    expect(call.headers['X-Kuroboto-Token']).toBe(TEST_CONFIG.daemon.authToken);
+  }
 }
 
 /**
