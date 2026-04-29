@@ -15,7 +15,7 @@ import {
   formatQAPrompt,
   type PromptFormatContext,
 } from './promptFormat.js';
-import { isQAPrompt } from './notificationDetect.js';
+import { isQAPrompt, isProgressMarker } from './notificationDetect.js';
 import { injectViaPty } from '../inject/pty.js';
 import type { SessionSnap } from './sleeping.js';
 import { topicContextFromHook } from './topicContext.js';
@@ -308,6 +308,25 @@ export function registerRoutes(app: Express, ctx: DaemonContext): void {
       ctx.injectClients.bindSessionByCwd(payload.session_id, payload.cwd);
     }
     const topicCtx = hookTopicCtx(payload);
+    // J1: gaming or sleep silences the Notification hook stream. Q&A prompts
+    // (matched on message text, not handler routing — so stuck-claude inside
+    // a sleep worktree still surfaces via the regular notif fallback) and
+    // explicit `[[KUROBOTO]]` progress markers bypass.
+    const gamingActive = ctx.state.gaming.snapshot().active;
+    const sleepActive = ctx.state.sleeping.snapshot().active.length > 0;
+    if (
+      (gamingActive || sleepActive) &&
+      !isQAPrompt(payload.message) &&
+      !isProgressMarker(payload.message)
+    ) {
+      ctx.logger.info('notify suppressed (gaming/sleep, non-Q&A)', {
+        cwd: payload.cwd,
+        gaming: gamingActive,
+        sleep: sleepActive,
+      });
+      res.json({ ok: true, suppressed: true });
+      return;
+    }
     if (shouldHandleAsQA(payload, ctx)) {
       // Fire-and-forget: the Q&A flow runs end-to-end (send question, await
       // reply, inject, audit) in the background. The hook just gets ack.

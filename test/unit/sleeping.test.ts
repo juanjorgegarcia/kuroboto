@@ -314,6 +314,48 @@ describe('SleepingOrchestrator', () => {
     expect(promptArg).toContain('# Plan');
   });
 
+  it('spawn args include --dangerously-skip-permissions before -p (Spec J2)', async () => {
+    const { deps } = makeDeps();
+    const orch = new SleepingOrchestrator(deps);
+    const spawnSpy = vi.spyOn(deps, 'spawn');
+    await orch.start({ repo: '/x', prompt: 'p', workRoot: '/y', maxDurationMs: 60_000 });
+    const [cmd, args] = spawnSpy.mock.calls[0];
+    expect(cmd).toBe('claude');
+    const flagIdx = args.indexOf('--dangerously-skip-permissions');
+    const pIdx = args.indexOf('-p');
+    expect(flagIdx).toBeGreaterThanOrEqual(0);
+    expect(pIdx).toBeGreaterThan(flagIdx);
+  });
+
+  it('PLAN_INTRO carries the [[KUROBOTO]] marker protocol (Spec J3)', async () => {
+    const { deps } = makeDeps();
+    const orch = new SleepingOrchestrator(deps);
+    const spawnSpy = vi.spyOn(deps, 'spawn');
+    await orch.start({ repo: '/x', plan: '# Plan\n\nDo X', workRoot: '/y', maxDurationMs: 60_000 });
+    const args = spawnSpy.mock.calls[0][1];
+    const promptArg = args[args.indexOf('-p') + 1];
+    expect(promptArg).toContain('[[KUROBOTO]]');
+    expect(promptArg).toContain('progress markers');
+    expect(promptArg).toContain('task N done');
+  });
+
+  it('PROMPT_OUTRO is appended to prompt-mode prompts (Spec J3)', async () => {
+    const { deps } = makeDeps();
+    const orch = new SleepingOrchestrator(deps);
+    const spawnSpy = vi.spyOn(deps, 'spawn');
+    await orch.start({
+      repo: '/x',
+      prompt: 'fix the auth bug',
+      workRoot: '/y',
+      maxDurationMs: 60_000,
+    });
+    const args = spawnSpy.mock.calls[0][1];
+    const promptArg = args[args.indexOf('-p') + 1];
+    expect(promptArg.startsWith('fix the auth bug')).toBe(true);
+    expect(promptArg).toContain('[[KUROBOTO]]');
+    expect(promptArg).toContain('progress markers');
+  });
+
   it('gaming snapshot restored to its prior on-state if it was already on', async () => {
     const { deps, state } = makeDeps();
     deps.gaming.arm(); // gaming already on, no timer
