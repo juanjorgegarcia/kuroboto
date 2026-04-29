@@ -81,11 +81,73 @@ describe('finishSleep', () => {
     expect(calls.notify[0]).toMatch(/pr create failed|sleep finalize failed/i);
   });
 
-  it('PR title comes from the slug (humanised)', async () => {
+  it('PR title falls back to humanised slug when prompt has no H1', async () => {
     const { deps, calls } = makeDeps();
     await finishSleep(SESSION, deps);
     const ghCall = calls.exec.find((c) => c.cmd === 'gh' && c.args[0] === 'pr' && c.args[1] === 'create');
     expect(ghCall).toBeDefined();
+    const title = ghCall!.args[ghCall!.args.indexOf('--title') + 1];
+    expect(title.toLowerCase()).toContain('add feature x');
+  });
+
+  it('PR title comes from the first H1 in the prompt when present', async () => {
+    const { deps, calls } = makeDeps();
+    const sessionWithH1: SleepingSession = {
+      ...SESSION,
+      prompt: 'Execute this implementation plan.\n\n# Bot prompt free-text Q&A (tmux inject)\n\n> Status: planned',
+    };
+    await finishSleep(sessionWithH1, deps);
+    const ghCall = calls.exec.find((c) => c.cmd === 'gh' && c.args[0] === 'pr' && c.args[1] === 'create');
+    const title = ghCall!.args[ghCall!.args.indexOf('--title') + 1];
+    expect(title).toBe('Bot prompt free-text Q&A (tmux inject)');
+  });
+
+  it('PR title prefers the first H1, ignoring later ## headings', async () => {
+    const { deps, calls } = makeDeps();
+    const sessionWithH1: SleepingSession = {
+      ...SESSION,
+      prompt: '# Real title\n\n## Subheading\n\n# Second H1',
+    };
+    await finishSleep(sessionWithH1, deps);
+    const ghCall = calls.exec.find((c) => c.cmd === 'gh' && c.args[0] === 'pr' && c.args[1] === 'create');
+    const title = ghCall!.args[ghCall!.args.indexOf('--title') + 1];
+    expect(title).toBe('Real title');
+  });
+
+  it('PR title is truncated to 70 chars when H1 is overlong', async () => {
+    const { deps, calls } = makeDeps();
+    const longH1 = 'a'.repeat(120);
+    const sessionWithH1: SleepingSession = {
+      ...SESSION,
+      prompt: `# ${longH1}`,
+    };
+    await finishSleep(sessionWithH1, deps);
+    const ghCall = calls.exec.find((c) => c.cmd === 'gh' && c.args[0] === 'pr' && c.args[1] === 'create');
+    const title = ghCall!.args[ghCall!.args.indexOf('--title') + 1];
+    expect(title.length).toBe(70);
+  });
+
+  it('PR title falls back to humanised slug when only ## headings exist', async () => {
+    const { deps, calls } = makeDeps();
+    const sessionNoH1: SleepingSession = {
+      ...SESSION,
+      prompt: '## Not a top-level heading\n\n### Nor this',
+    };
+    await finishSleep(sessionNoH1, deps);
+    const ghCall = calls.exec.find((c) => c.cmd === 'gh' && c.args[0] === 'pr' && c.args[1] === 'create');
+    const title = ghCall!.args[ghCall!.args.indexOf('--title') + 1];
+    expect(title.toLowerCase()).toContain('add feature x');
+  });
+
+  it('PR title falls back when H1 lives past the first 50 lines', async () => {
+    const { deps, calls } = makeDeps();
+    const filler = Array(60).fill('preamble line').join('\n');
+    const sessionWithH1: SleepingSession = {
+      ...SESSION,
+      prompt: `${filler}\n# Buried title`,
+    };
+    await finishSleep(sessionWithH1, deps);
+    const ghCall = calls.exec.find((c) => c.cmd === 'gh' && c.args[0] === 'pr' && c.args[1] === 'create');
     const title = ghCall!.args[ghCall!.args.indexOf('--title') + 1];
     expect(title.toLowerCase()).toContain('add feature x');
   });

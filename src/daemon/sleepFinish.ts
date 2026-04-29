@@ -24,6 +24,26 @@ function humanise(slug: string): string {
   return slug.replace(/-/g, ' ');
 }
 
+const PR_TITLE_MAX_LEN = 70;
+const H1_SCAN_MAX_LINES = 50;
+
+/**
+ * Pulls the spec title from the first non-empty Markdown H1 in `prompt`. Falls
+ * back to humanising the slug when no H1 lives in the first 50 lines (e.g.
+ * sessions started with `--prompt`, or specs that lead with prose).
+ */
+function deriveTitle(prompt: string, slug: string): string {
+  const lines = prompt.split('\n', H1_SCAN_MAX_LINES + 1).slice(0, H1_SCAN_MAX_LINES);
+  for (const line of lines) {
+    const m = /^#\s+(.+?)\s*$/.exec(line);
+    if (m && m[1]) {
+      const title = m[1].trim();
+      if (title) return title.slice(0, PR_TITLE_MAX_LEN);
+    }
+  }
+  return humanise(slug).slice(0, PR_TITLE_MAX_LEN);
+}
+
 function buildBody(session: SleepingSession): string {
   return [
     '## Summary',
@@ -79,7 +99,7 @@ export async function finishSleep(session: SleepingSession, deps: FinishDeps): P
   }
 
   // 3. Create PR via gh
-  const title = humanise(session.slug);
+  const title = deriveTitle(session.prompt, session.slug);
   const body = buildBody(session);
   const create = await deps.exec(
     'gh',
