@@ -30,7 +30,7 @@ SleepingOrchestrator (today)         SleepingOrchestrator (after)
                                        snapshot()  → { active: SessionSnap[], capacity }
 ```
 
-`policy.maxConcurrentSleeps: number` (default 3) caps the Map size. The daemon refuses the (N+1)th dispatch with a clear error.
+`policy.maxConcurrentSleeps: number` (default 6) caps the Map size. The daemon refuses the (N+1)th dispatch with a clear error.
 
 The `kuroboto sleeping` CLI is updated to handle the multi case naturally.
 
@@ -46,7 +46,7 @@ The `kuroboto sleeping` CLI is updated to handle the multi case naturally.
 - `src/cli/sleeping.ts`:
   - `kuroboto sleeping status` — always lists all active (compact format below); `(no active sleeps)` when empty.
   - `kuroboto sleeping cancel` — no args → cancels most recent (with prompted confirmation showing slug); `<slug>` → cancels that one without prompt; `--all` → cancels all (with confirmation).
-- `src/config/schema.ts` — add `maxConcurrentSleeps: z.number().int().min(1).default(3)` to `PolicyConfig`.
+- `src/config/schema.ts` — add `maxConcurrentSleeps: z.number().int().min(1).default(6)` to `PolicyConfig`.
 - `src/daemon/lifecycle.ts` (or wherever shutdown drains) — iterate `sessions` and cancel each on SIGTERM (existing behavior, applied N times).
 - `test/unit/sleeping.test.ts` (extend) — multi-session orchestration cases.
 - `test/integration/daemon.test.ts` (extend) — concurrent dispatch + status + cancel scenarios.
@@ -118,7 +118,7 @@ cancel one with `kuroboto sleeping cancel <slug>` or raise the cap in config (`p
 **Same-repo dispatches:** the daemon does **not** prevent two sleeps targeting the same repo. The user is expected to know whether their two specs are orthogonal (à la Specs A+B in the bot UX overhaul). If they're not orthogonal, the second PR will hit merge conflicts — but that's downstream of the daemon's responsibility. A future improvement could warn ("repo X already has 1 active sleep") — out of scope for v1.
 
 **Migration / backwards compat:**
-- Existing config (no `maxConcurrentSleeps`) loads with default 3 via Zod.
+- Existing config (no `maxConcurrentSleeps`) loads with default 6 via Zod.
 - Single-sleep callers see no behavior change: `start()` succeeds when 0 active, status shows the one with the same info as today (just with `(cap 3)` annotation), `cancel` without args works on the lone active.
 - The `/v1/sleeping` GET response shape changes from `SessionSnap | null` to `{ active: [], capacity }`. **Existing CLI callers** are updated in this PR; **no external API consumers** today, so no version bump.
 

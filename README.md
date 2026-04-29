@@ -170,7 +170,7 @@ Daemon state machine:
    - exit 0       → finishSleep: git push + gh repo view (default branch)
                                  + gh pr create + notify "✅ done — PR: <url>"
    - exit ≠ 0     → notify "❌ failed — exit N"
-   - max 2h       → kill child + notify "⏰ timeout"
+   - max 8h       → kill child + notify "⏰ timeout"
    - DELETE API   → kill + notify "🛑 cancelled"
 5. restore gaming → flip back to snapshot (preserving any remaining timer)
 ```
