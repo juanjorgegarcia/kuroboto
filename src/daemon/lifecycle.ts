@@ -142,7 +142,9 @@ export async function startDaemon(config: ConfigT): Promise<RunningDaemon> {
     if (stopped) return;
     stopped = true;
     logger.info('daemon stopping');
-    state.sleeping.cancel().catch(() => {});
+    // cancel({ all: true }) — cancel() no-args throws when multi-session,
+    // which would silently leave orphan children on shutdown.
+    state.sleeping.cancel({ all: true }).catch(() => {});
     pending.drainAll('shutdown');
     pending.stopCleanupLoop();
     pendingNotifications.cancelAll();

@@ -143,7 +143,7 @@ export async function sleepingCancelCommand(slug: string | undefined, opts: Canc
     }
     const r = await postCancel({ slug });
     if (r.cancelled.length > 0) console.log(chalk.green(`sleep cancelled: ${r.cancelled.join(', ')}`));
-    else console.log(chalk.dim('no sleep cancelled'));
+    else console.log(chalk.dim(`session ${slug} already ended`));
     return;
   }
 

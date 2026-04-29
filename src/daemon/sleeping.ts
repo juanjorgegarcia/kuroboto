@@ -118,6 +118,8 @@ export class SleepingOrchestrator {
     const worktreePath = `${req.workRoot}/${slug}`;
     const finalPrompt = req.plan ? PLAN_INTRO + req.plan : (req.prompt as string);
 
+    // createWorktree first — if it fails, we want zero side effects (no
+    // gaming arm leak, no half-state). Throws propagate to the caller.
     await this.deps.createWorktree(req.repo, branch, worktreePath);
 
     // 0 → 1 transition: arm gaming and stash the prior so we can restore on
