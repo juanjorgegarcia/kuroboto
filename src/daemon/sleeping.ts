@@ -3,6 +3,7 @@ import { GamingState, type GamingSnapshot } from './gaming.js';
 import { slugify } from './worktree.js';
 import type { DesktopNotifyOpts } from '../notify/desktop.js';
 import type { ChannelContext } from '../channels/Channel.js';
+import { attachMarkerRelay, type MarkerRelayLogger } from './sleepReportRelay.js';
 
 export type SpawnFn = (cmd: string, args: string[], opts: SpawnOptions) => ChildProcess;
 
@@ -15,6 +16,9 @@ export interface SleepingDeps {
   removeWorktree: (repo: string, dir: string) => Promise<void>;
   onSuccess: (session: SleepingSession) => Promise<void>;
   notifyDesktop?: (opts: DesktopNotifyOpts) => Promise<void>;
+  /** Used by the [[KUROBOTO]] stdout-marker relay (Spec J3). Optional so test
+   *  fakes can stay terse; production wires the daemon logger. */
+  logger?: MarkerRelayLogger;
   /** Maximum concurrent sleep sessions. Spec D — defaults to 3 in config. */
   maxConcurrent: number;
 }
@@ -75,8 +79,26 @@ interface InternalSession extends SleepingSession {
   terminated: boolean;
 }
 
+const MARKER_PROTOCOL =
+  'You are running unattended in a sleep session. Emit progress markers so the dev can\n' +
+  'follow along without seeing every tool call. Use this exact format, one per line, on\n' +
+  'a line by itself:\n' +
+  '\n' +
+  '[[KUROBOTO]] <one-line update>\n' +
+  '\n' +
+  'Emit a marker:\n' +
+  '- after each task is committed: "[[KUROBOTO]] task N done: <what changed>"\n' +
+  '- when you hit a blocker that needs human intervention: "[[KUROBOTO]] blocked: <why>"\n' +
+  '- at the very end as the final summary: "[[KUROBOTO]] summary: <bullets>"\n' +
+  '\n' +
+  'Keep markers short — one line each, no markdown. They land directly in Telegram.\n';
+
 const PLAN_INTRO =
-  'Execute this implementation plan. Follow it task-by-task. Run tests, commit per task, and create a final summary at the end.\n\n';
+  'Execute this implementation plan. Follow it task-by-task. Run tests, commit per task, and create a final summary at the end.\n\n' +
+  MARKER_PROTOCOL +
+  '\n';
+
+const PROMPT_OUTRO = '\n\n' + MARKER_PROTOCOL;
 
 export class SleepingOrchestrator {
   private readonly sessions = new Map<string, InternalSession>();
@@ -117,7 +139,9 @@ export class SleepingOrchestrator {
     }
     const branch = `sleep/${slug}`;
     const worktreePath = `${req.workRoot}/${slug}`;
-    const finalPrompt = req.plan ? PLAN_INTRO + req.plan : (req.prompt as string);
+    const finalPrompt = req.plan
+      ? PLAN_INTRO + req.plan
+      : (req.prompt as string) + PROMPT_OUTRO;
 
     // createWorktree first — if it fails, we want zero side effects (no
     // gaming arm leak, no half-state). Throws propagate to the caller.
@@ -133,7 +157,25 @@ export class SleepingOrchestrator {
     const startedAt = Date.now();
     const expectedEndAt = startedAt + req.maxDurationMs;
 
-    const child = this.deps.spawn('claude', ['-p', finalPrompt], { cwd: worktreePath });
+    // J2: --dangerously-skip-permissions short-circuits claude's PreToolUse
+    // hook entirely. Sleep is autonomous and pre-approved (gaming auto-allows
+    // anyway), so the round-trip is wasted bandwidth — and skipping the hook
+    // also stops claude's own "Claude needs permission..." Notification hook
+    // from firing on every tool call.
+    const child = this.deps.spawn(
+      'claude',
+      ['--dangerously-skip-permissions', '-p', finalPrompt],
+      { cwd: worktreePath },
+    );
+
+    // J3: relay [[KUROBOTO]] markers from claude's stdout/stderr to Telegram.
+    // Also drains the OS pipe buffer so claude doesn't block on a full pipe
+    // during long autonomous runs.
+    attachMarkerRelay(child, {
+      slug,
+      notify: this.deps.notify,
+      logger: this.deps.logger,
+    });
 
     const maxDurationTimer = setTimeout(() => {
       this.handleTimeout(slug);

@@ -79,6 +79,7 @@ export async function startDaemon(config: ConfigT): Promise<RunningDaemon> {
     createWorktree,
     removeWorktree,
     notifyDesktop: desktopNotifyDep,
+    logger,
     maxConcurrent: config.policy.maxConcurrentSleeps,
     onSuccess: (session) =>
       finishSleep(session, {
