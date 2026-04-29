@@ -44,11 +44,12 @@ export interface CleanupDeps {
  * already merged.
  */
 export async function listMergedSleeps(deps: Omit<CleanupDeps, 'confirm' | 'log' | 'warn'>): Promise<MergedSleep[]> {
+  // gh's --head is exact-match, not prefix-match, so we list all merged PRs
+  // and rely on the headRefName.startsWith('sleep/') filter below.
   const r = await deps.exec('gh', [
     'pr',
     'list',
     '--state', 'merged',
-    '--head', 'sleep/',
     '--json', 'number,headRefName,state',
     '--limit', '100',
   ]);
