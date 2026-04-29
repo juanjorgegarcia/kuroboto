@@ -7,6 +7,8 @@ import chalk from 'chalk';
 import { saveConfig } from '../config/save.js';
 import { CONFIG_FILE } from '../config/paths.js';
 import type { ConfigT } from '../config/schema.js';
+import { TelegramApi } from '../channels/telegram/api.js';
+import { validateBotPermissions } from '../channels/telegram/forumValidation.js';
 
 interface TelegramGetUpdatesResp {
   ok: boolean;
@@ -44,22 +46,77 @@ export async function initCommand(): Promise<void> {
   const token = ((tokenAns.val as string) ?? '').trim();
   if (!token) { console.log('Cancelado.'); return; }
 
-  console.log(chalk.cyan('\nAbra seu bot no Telegram (busca pelo username dele) e envie /start.'));
-  await prompts({ type: 'confirm', name: 'val', message: 'Mandou /start? Eu busco o chat_id.', initial: true });
+  const modeAns = await prompts({
+    type: 'select',
+    name: 'val',
+    message: 'Onde o bot vai postar?',
+    choices: [
+      { title: 'DM 1:1 (padrão)', value: 'dm', description: 'um único chat com você' },
+      {
+        title: 'Supergroup com topics',
+        value: 'forum',
+        description: 'um topic por sessão Claude — recomendado pra multi-sessão',
+      },
+    ],
+    initial: 0,
+  });
+  const forumMode = modeAns.val === 'forum';
+
+  if (forumMode) {
+    console.log(chalk.cyan('\nSupergroup com topics:'));
+    console.log('  1. No Telegram, crie um New Group (só você) e converta pra Supergroup');
+    console.log('  2. Settings do grupo → "Topics" → ative');
+    console.log('  3. Add o bot como Administrator com a permissão "Manage Topics"');
+    console.log('  4. Mande qualquer mensagem dentro do supergroup (qualquer topic, ex: General)');
+    console.log('     — eu uso essa mensagem pra capturar o chat_id (negativo, começa com -100)');
+    await prompts({
+      type: 'confirm',
+      name: 'val',
+      message: 'Pronto, mandou a mensagem? Eu busco o chat_id.',
+      initial: true,
+    });
+  } else {
+    console.log(chalk.cyan('\nAbra seu bot no Telegram (busca pelo username dele) e envie /start.'));
+    await prompts({
+      type: 'confirm',
+      name: 'val',
+      message: 'Mandou /start? Eu busco o chat_id.',
+      initial: true,
+    });
+  }
 
   let chatId: number | null = null;
   for (let i = 0; i < 3 && chatId === null; i++) {
-    chatId = await fetchChatId(token);
+    chatId = await fetchChatId(token, forumMode);
     if (chatId === null && i < 2) {
-      const retry = await prompts({ type: 'confirm', name: 'val', message: 'Nada encontrado. Manda /start de novo e tenta de novo?', initial: true });
+      const retry = await prompts({
+        type: 'confirm',
+        name: 'val',
+        message: forumMode
+          ? 'Nada encontrado. Manda outra mensagem no supergroup e tenta de novo?'
+          : 'Nada encontrado. Manda /start de novo e tenta de novo?',
+        initial: true,
+      });
       if (retry.val !== true) break;
     }
   }
   if (chatId === null) {
-    console.log(chalk.red('\nNão consegui pegar o chat_id. Rode `kuroboto init` de novo após mandar /start.'));
+    console.log(chalk.red('\nNão consegui pegar o chat_id. Rode `kuroboto init` de novo.'));
     return;
   }
   console.log(chalk.green(`✓ chat_id capturado: ${chatId}`));
+
+  if (forumMode) {
+    // Hard gate: refuse to save a forum config that won't work at runtime.
+    try {
+      await validateBotPermissions(new TelegramApi(token), chatId);
+      console.log(chalk.green('✓ permissões do bot OK (admin + can_manage_topics)'));
+    } catch (e) {
+      console.log(chalk.red(`\n${(e as Error).message}`));
+      console.log(chalk.yellow('Ajusta as permissões e roda `kuroboto init` de novo.'));
+      return;
+    }
+  }
 
   const portAns = await prompts({
     type: 'number',
@@ -94,7 +151,7 @@ export async function initCommand(): Promise<void> {
 
   const authToken = randomBytes(32).toString('hex');
   const config: ConfigT = {
-    channel: { type: 'telegram', token, chatId, forumMode: false },
+    channel: { type: 'telegram', token, chatId, forumMode },
     daemon: { port, authToken },
     inject,
     policy: {
@@ -130,7 +187,7 @@ export async function initCommand(): Promise<void> {
   console.log('  • ou direto `kuroboto claude` em qualquer pasta\n');
 }
 
-async function fetchChatId(token: string): Promise<number | null> {
+async function fetchChatId(token: string, forumMode: boolean): Promise<number | null> {
   try {
     const res = await fetch(`https://api.telegram.org/bot${token}/getUpdates`);
     if (!res.ok) return null;
@@ -138,7 +195,13 @@ async function fetchChatId(token: string): Promise<number | null> {
     if (!json.ok) return null;
     for (const update of [...json.result].reverse()) {
       const id = update.message?.chat?.id;
-      if (typeof id === 'number') return id;
+      if (typeof id !== 'number') continue;
+      // In forum mode the chatId is a negative supergroup id (-100…). DM mode
+      // is positive. Filter so we don't accidentally pick up an unrelated DM
+      // when the user has both kinds of chat with the bot in flight.
+      if (forumMode && id >= 0) continue;
+      if (!forumMode && id < 0) continue;
+      return id;
     }
     return null;
   } catch {

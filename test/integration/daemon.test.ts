@@ -953,6 +953,176 @@ describe('inject-clients endpoints', () => {
   });
 });
 
+describe('forumMode topic context routing', () => {
+  let tmpDir: string;
+
+  beforeEach(async () => {
+    tmpDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'kuroboto-topics-int-'));
+  });
+  afterEach(async () => {
+    await fsp.rm(tmpDir, { recursive: true, force: true });
+  });
+
+  async function writeTranscript(name: string, lines: unknown[]): Promise<string> {
+    const file = path.join(tmpDir, name);
+    await fsp.writeFile(file, lines.map((l) => JSON.stringify(l)).join('\n'));
+    return file;
+  }
+
+  it('PreToolUse with cwd matching a registered CLI → sendPrompt ctx.slug = client slug', async () => {
+    const { ctx, channel, injectClients } = makeContext({ mode: 'away' });
+    injectClients.register({
+      slug: 'proj-a',
+      pid: 1,
+      cwd: '/x/proj-a',
+      localPort: 60000,
+      registeredAt: Date.now(),
+    });
+    const app = createServer(ctx);
+    const pending = request(app)
+      .post('/v1/permission')
+      .set('X-Kuroboto-Token', TEST_TOKEN)
+      .send({
+        hook_event_name: 'PreToolUse',
+        session_id: 'sess-A',
+        tool_name: 'Bash',
+        tool_input: { command: 'ls' },
+        cwd: '/x/proj-a',
+      })
+      .then((r) => r);
+    await waitFor(() => channel.sentPromptsDetailed.length === 1);
+    expect(channel.sentPromptsDetailed[0].ctx).toEqual({ slug: 'proj-a' });
+    channel.emitDecision(channel.sentPromptsDetailed[0].req.requestId, { decision: 'allow' });
+    await pending;
+  });
+
+  it('PreToolUse inside an active sleep worktree → sendPrompt ctx isSleep + sleep slug', async () => {
+    const worktreePath = path.join(tmpDir, 'work', 'fix-bot-ux-abc123');
+    const { ctx, channel } = makeContext({ mode: 'away' });
+    vi.spyOn(ctx.state.sleeping, 'snapshot').mockReturnValue({
+      active: [
+        {
+          slug: 'fix-bot-ux-abc123',
+          branch: 'sleep/fix-bot-ux-abc123',
+          worktreePath,
+          startedAt: Date.now(),
+          expectedEndAt: Date.now() + 60_000,
+        },
+      ],
+      capacity: 3,
+    });
+    const app = createServer(ctx);
+    const pending = request(app)
+      .post('/v1/permission')
+      .set('X-Kuroboto-Token', TEST_TOKEN)
+      .send({
+        hook_event_name: 'PreToolUse',
+        session_id: 'sess-S',
+        tool_name: 'Bash',
+        tool_input: { command: 'ls' },
+        cwd: worktreePath,
+      })
+      .then((r) => r);
+    await waitFor(() => channel.sentPromptsDetailed.length === 1);
+    expect(channel.sentPromptsDetailed[0].ctx).toEqual({
+      slug: 'fix-bot-ux-abc123',
+      isSleep: true,
+    });
+    channel.emitDecision(channel.sentPromptsDetailed[0].req.requestId, { decision: 'allow' });
+    await pending;
+  });
+
+  it('PreToolUse with no matching CLI / sleep → sendPrompt ctx falls back to sessionId', async () => {
+    const { ctx, channel } = makeContext({ mode: 'away' });
+    const app = createServer(ctx);
+    const pending = request(app)
+      .post('/v1/permission')
+      .set('X-Kuroboto-Token', TEST_TOKEN)
+      .send({
+        hook_event_name: 'PreToolUse',
+        session_id: 'a3f9b2c1-rest',
+        tool_name: 'Bash',
+        tool_input: { command: 'ls' },
+        cwd: '/x/some-project',
+      })
+      .then((r) => r);
+    await waitFor(() => channel.sentPromptsDetailed.length === 1);
+    expect(channel.sentPromptsDetailed[0].ctx).toEqual({
+      sessionId: 'a3f9b2c1-rest',
+      cwdBasename: 'some-project',
+    });
+    channel.emitDecision(channel.sentPromptsDetailed[0].req.requestId, { decision: 'allow' });
+    await pending;
+  });
+
+  it('Notification (immediate, away mode) → sendNotification ctx matches the inject client slug', async () => {
+    const { ctx, channel, injectClients } = makeContext({ mode: 'away' });
+    injectClients.register({
+      slug: 'proj-b',
+      pid: 1,
+      cwd: '/x/proj-b',
+      localPort: 60001,
+      registeredAt: Date.now(),
+    });
+    const app = createServer(ctx);
+    await request(app)
+      .post('/v1/notify')
+      .set('X-Kuroboto-Token', TEST_TOKEN)
+      .send({
+        hook_event_name: 'Notification',
+        session_id: 'sess-N',
+        message: 'plain notice',
+        cwd: '/x/proj-b',
+      });
+    await waitFor(() => channel.sentNotificationsDetailed.length === 1);
+    expect(channel.sentNotificationsDetailed[0].ctx).toEqual({ slug: 'proj-b' });
+  });
+
+  it('Q&A reply pipeline tags every channel call with the same routing context', async () => {
+    const transcript = await writeTranscript('q.jsonl', [
+      { role: 'user', content: 'help' },
+      { role: 'assistant', content: 'pick A or B' },
+    ]);
+    const { ctx, channel, injectClients, pendingReplies } = makeContext({
+      mode: 'away',
+      inject: { enabled: true, strategy: 'pty', replyTimeoutMs: 60_000 },
+    });
+    injectClients.register({
+      slug: 'proj-q',
+      pid: 1,
+      cwd: '/x/proj-q',
+      // localPort 1 is unreachable — we expect the inject to fail, but the
+      // resulting "❌ Inject falhou" notification still gets the topic ctx.
+      localPort: 1,
+      registeredAt: Date.now(),
+    });
+    const app = createServer(ctx);
+    await request(app)
+      .post('/v1/notify')
+      .set('X-Kuroboto-Token', TEST_TOKEN)
+      .send({
+        hook_event_name: 'Notification',
+        session_id: 'sess-Q',
+        message: 'Claude is waiting for your input',
+        cwd: '/x/proj-q',
+        transcript_path: transcript,
+      });
+    await waitFor(() => channel.sentQuestionsDetailed.length === 1);
+    expect(channel.sentQuestionsDetailed[0].ctx).toEqual({ slug: 'proj-q' });
+    await waitFor(() => pendingReplies.size() === 1);
+    channel.emitFreeText('A', '1000');
+    await waitFor(
+      () => channel.sentNotificationsDetailed.some((n) => n.text.startsWith('❌ Inject falhou')),
+      5000,
+    );
+    const failNotif = channel.sentNotificationsDetailed.find((n) =>
+      n.text.startsWith('❌ Inject falhou'),
+    )!;
+    expect(failNotif.ctx).toEqual({ slug: 'proj-q' });
+  });
+
+});
+
 describe('Q&A flow (PTY inject)', () => {
   let tmpDir: string;
 

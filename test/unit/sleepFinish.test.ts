@@ -1,6 +1,7 @@
 import { describe, it, expect, vi } from 'vitest';
 import { finishSleep, type FinishDeps } from '../../src/daemon/sleepFinish.js';
 import type { SleepingSession } from '../../src/daemon/sleeping.js';
+import type { ChannelContext } from '../../src/channels/Channel.js';
 
 const SESSION: SleepingSession = {
   slug: 'add-feature-x',
@@ -12,8 +13,19 @@ const SESSION: SleepingSession = {
   repo: '/tmp/repo',
 };
 
-function makeDeps(prUrl = 'https://github.com/x/y/pull/42'): { deps: FinishDeps; calls: { exec: Array<{ cmd: string; args: string[]; cwd?: string }>; notify: string[] } } {
-  const calls = { exec: [] as Array<{ cmd: string; args: string[]; cwd?: string }>, notify: [] as string[] };
+function makeDeps(prUrl = 'https://github.com/x/y/pull/42'): {
+  deps: FinishDeps;
+  calls: {
+    exec: Array<{ cmd: string; args: string[]; cwd?: string }>;
+    notify: string[];
+    notifyCtxs: (ChannelContext | undefined)[];
+  };
+} {
+  const calls = {
+    exec: [] as Array<{ cmd: string; args: string[]; cwd?: string }>,
+    notify: [] as string[],
+    notifyCtxs: [] as (ChannelContext | undefined)[],
+  };
   const deps: FinishDeps = {
     exec: vi.fn(async (cmd, args, opts) => {
       calls.exec.push({ cmd, args, cwd: opts?.cwd });
@@ -25,7 +37,10 @@ function makeDeps(prUrl = 'https://github.com/x/y/pull/42'): { deps: FinishDeps;
       }
       return { code: 0, stdout: '', stderr: '' };
     }),
-    notify: vi.fn(async (msg) => { calls.notify.push(msg); }),
+    notify: vi.fn(async (msg, ctx) => {
+      calls.notify.push(msg);
+      calls.notifyCtxs.push(ctx);
+    }),
   };
   return { deps, calls };
 }
@@ -138,6 +153,20 @@ describe('finishSleep', () => {
     await finishSleep(SESSION, deps);
     expect(calls.notify).toHaveLength(1);
     expect(calls.notify[0]).toContain('https://github.com/x/y/pull/42');
+  });
+
+  it('routes notify with the sleep slug + isSleep ctx on success and on failure', async () => {
+    const { deps, calls } = makeDeps();
+    await finishSleep(SESSION, deps);
+    expect(calls.notifyCtxs).toEqual([{ slug: SESSION.slug, isSleep: true }]);
+
+    const failed = makeDeps();
+    failed.deps.exec = vi.fn(async (cmd) => {
+      if (cmd === 'git') return { code: 1, stdout: '', stderr: 'no upstream' };
+      return { code: 0, stdout: '', stderr: '' };
+    });
+    await finishSleep(SESSION, failed.deps);
+    expect(failed.calls.notifyCtxs).toEqual([{ slug: SESSION.slug, isSleep: true }]);
   });
 
   it('uses the default branch from gh repo view', async () => {
