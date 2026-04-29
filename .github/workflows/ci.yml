@@ -1,0 +1,36 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+      - run: npm ci
+      - run: npx tsc --noEmit
+      - name: Stub kuroboto config for tests
+        # Some tests call loadConfig() which reads ~/.config/kuroboto/config.json.
+        # Local devs have one; CI doesn't. Write a minimal valid config so
+        # those tests get past the load step.
+        # TODO: refactor tests to inject loadConfig as a dep instead of relying
+        # on a real file.
+        run: |
+          mkdir -p ~/.config/kuroboto
+          cat > ~/.config/kuroboto/config.json <<'JSON'
+          {
+            "channel": {"type":"telegram","token":"ci-stub","chatId":1},
+            "daemon": {"port":47891,"authToken":"0000000000000000000000000000000000000000000000000000000000000000"},
+            "inject": {"enabled":false},
+            "policy": {"permissionTimeoutMs":1000,"failOpen":true}
+          }
+          JSON
+      - run: npx vitest run
+      - run: npm run build
