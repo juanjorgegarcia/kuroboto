@@ -9,3 +9,4 @@ export const LOG_DIR = path.join(CONFIG_DIR, 'logs');
 export const AUDIT_FILE = path.join(CONFIG_DIR, 'audit.jsonl');
 export const TOPICS_FILE = path.join(CONFIG_DIR, 'topics.json');
 export const STARTUP_LOG_FILE = path.join(CONFIG_DIR, 'daemon.startup.log');
+export const CRASH_LOG_FILE = path.join(CONFIG_DIR, 'daemon.crash.log');

@@ -1,5 +1,9 @@
 import { loadConfig } from '../config/load.js';
 import { startDaemon } from './lifecycle.js';
+import { CRASH_LOG_FILE } from '../config/paths.js';
+import { installCrashHandlers, logCrashSync } from './crashHandlers.js';
+
+installCrashHandlers(CRASH_LOG_FILE);
 
 async function main(): Promise<void> {
   const config = await loadConfig();
@@ -9,6 +13,6 @@ async function main(): Promise<void> {
 }
 
 main().catch((e) => {
-  console.error(`[kuroboto daemon] fatal: ${(e as Error).message}`);
+  logCrashSync(CRASH_LOG_FILE, 'startupError', e);
   process.exit(1);
 });
