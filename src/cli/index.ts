@@ -99,10 +99,11 @@ program
 
 program
   .command('ohayo')
-  .description('Morning ritual: tmux session "claude" + daemon + Claude Code, all wired')
-  .action(async () => {
+  .description('Morning ritual: daemon + Claude Code in this terminal (PTY). Use --tmux for the legacy detachable session.')
+  .option('--tmux', 'use the legacy tmux-attached flow (detachable session, intercepted bell)', false)
+  .action(async (opts: { tmux?: boolean }) => {
     try {
-      await ohayoCommand();
+      await ohayoCommand(opts);
     } catch (e) {
       console.error(`ohayo failed: ${(e as Error).message}`);
       process.exit(1);
