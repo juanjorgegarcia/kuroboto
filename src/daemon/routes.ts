@@ -383,18 +383,10 @@ export function registerRoutes(app: Express, ctx: DaemonContext): void {
         source: 'gaming',
         remember: false,
       }).catch((e) => ctx.logger.warn('audit append failed', { err: (e as Error).message }));
-      // Skip per-tool FYI when a sleep session is active. Autonomous claude
-      // hammers tool calls (playwright, Grep, Read, etc.); per-call FYIs flood
-      // Telegram badly enough to crash the client. Sleep mode already
-      // announces start/done/error; per-tool noise during sleep is pure spam.
-      // When gaming was armed manually (no active sleep), keep FYIs — that's
-      // the "playing a game, monitoring between rounds" use case.
-      const sleepActive = ctx.state.sleeping.snapshot().active.length > 0;
-      if (!sleepActive) {
-        formatPermissionPrompt(payload, fmtCtx())
-          .then((text) => ctx.channel.sendNotification(`🎮 ${text}`, topicCtx))
-          .catch((e) => ctx.logger.warn('gaming notify failed', { err: (e as Error).message }));
-      }
+      // No per-tool FYI on Telegram. Claude hammers tool calls (Read, Grep,
+      // Bash, etc.) fast enough that per-call notifications flood the client
+      // and crash it — observed in both sleep and active-use scenarios.
+      // Audit log keeps the full record at ~/.config/kuroboto/audit.jsonl.
       res.json(decision);
       return;
     }
