@@ -1,78 +1,44 @@
 name: Claude Code Review
 
-# Auto-review every PR with Claude Code, using the project's AGENTS.md
-# conventions and spec-driven test expectations. Findings posted as PR
-# review comments.
-#
-# Setup: requires `CLAUDE_CODE_OAUTH_TOKEN` secret (installed via
-# /install-github-app in Claude Code).
-
 on:
   pull_request:
     types: [opened, synchronize, ready_for_review, reopened]
+    # Optional: Only run on specific file changes
+    # paths:
+    #   - "src/**/*.ts"
+    #   - "src/**/*.tsx"
+    #   - "src/**/*.js"
+    #   - "src/**/*.jsx"
 
 jobs:
   claude-review:
+    # Optional: Filter by PR author
+    # if: |
+    #   github.event.pull_request.user.login == 'external-contributor' ||
+    #   github.event.pull_request.user.login == 'new-developer' ||
+    #   github.event.pull_request.author_association == 'FIRST_TIME_CONTRIBUTOR'
+
     runs-on: ubuntu-latest
-    # Skip on draft PRs and on PRs whose title starts with `[skip-review]`.
-    if: |
-      github.event.pull_request.draft == false &&
-      !startsWith(github.event.pull_request.title, '[skip-review]')
     permissions:
       contents: read
-      pull-requests: write
-      issues: write
+      pull-requests: read
+      issues: read
       id-token: write
 
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
         with:
-          fetch-depth: 0
+          fetch-depth: 1
 
       - name: Run Claude Code Review
         id: claude-review
         uses: anthropics/claude-code-action@v1
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
-          track_progress: true
-          prompt: |
-            REPO: ${{ github.repository }}
-            PR NUMBER: ${{ github.event.pull_request.number }}
+          plugin_marketplaces: 'https://github.com/anthropics/claude-code.git'
+          plugins: 'code-review@claude-code-plugins'
+          prompt: '/code-review:code-review ${{ github.repository }}/pull/${{ github.event.pull_request.number }}'
+          # See https://github.com/anthropics/claude-code-action/blob/main/docs/usage.md
+          # or https://code.claude.com/docs/en/cli-reference for available options
 
-            Review this pull request as a senior engineer familiar with the project.
-
-            Read `AGENTS.md` first for project orientation (where things live, the
-            spec-via-sleep workflow). Then read any spec linked from the PR
-            description or commit messages — kuroboto specs live under
-            `docs/specs/<feature>.md` and contain the problem, solution sketch,
-            files to touch, behavior details, and a `## Test plan` section. Use
-            the spec to judge whether the diff matches intent and whether the
-            test plan is actually covered by tests in this PR.
-
-            Focus the review on:
-            1. **Bugs / logic errors** — anything that would break in production
-               (hook failures, daemon crashes, race conditions, lost messages).
-            2. **Security** — input validation, command injection (this project
-               spawns lots of subprocesses: claude, gh, git, tmux), secret
-               handling (Telegram tokens, daemon authToken, never log them).
-            3. **Spec adherence** — does the diff implement what the spec
-               describes? Are spec test-plan cases actually exercised by tests
-               in this PR? Flag any deviation from the spec without explanation.
-            4. **Convention drift** — anything that breaks AGENTS.md patterns:
-               where things live, the daemon/hook/cli boundaries, the channel
-               abstraction (Channel.ts), the audit/allowlist invariants.
-            5. **Silent failures** — try/catch that swallow errors, fallback
-               logic that hides real problems, missing logger calls on
-               error paths, daemon code paths that exit without leaving a
-               diagnostic trail.
-
-            Skip nitpicks (formatting, naming preferences, line length). Surface
-            only issues that would justify a "request changes" review.
-
-            Use inline review comments for specific issues anchored to lines, and a
-            top-level PR comment for general observations. End with a one-line verdict:
-            `LGTM`, `comments`, or `request changes`.
-
-          claude_args: |
-            --allowedTools "mcp__github_inline_comment__create_inline_comment,Bash(gh pr comment:*),Bash(gh pr diff:*),Bash(gh pr view:*)"
