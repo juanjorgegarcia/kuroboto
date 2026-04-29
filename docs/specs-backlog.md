@@ -4,8 +4,20 @@ Loose collection of feature ideas worth a spec eventually. Not prioritized; prom
 
 ## Active queue (specced, ready to dispatch)
 
-- **Spec D — parallel sleep sessions** (`docs/specs/parallel-sleeps.md`). Was deferred behind Spec E (PTY injection); E shipped in PR #12, so D is now unblocked. Will need a quick rebase since Spec E touched `sleeping.ts` for late-binding integration.
-- **Spec F — Telegram supergroup + topics** (`docs/specs/supergroup-topics.md`). Designed in the same session as Spec E. Independent of D in terms of code — they touch different layers (D = `sleeping.ts` + cli; F = `TelegramChannel` + topic manager + every channel call site). Both can dispatch sequentially or even in parallel with care.
+- **Spec G — Bug C watchdog** (`docs/specs/bug-c-watchdog.md`, 2026-04-29). Daemon auto-recovery via parent-child watchdog process. Foundational for status UI integration; touches `start.ts`/`stop.ts`/`status.ts`. v1 magro: respawns daemon on death, sleeps in-flight orphaned with cleanup notif.
+- **Spec H — Daemon health UI** (`docs/specs/daemon-health-ui.md`, 2026-04-29). `kuroboto status` enriched with gaming/sleeps/inject/topics/watchdog. New `/v1/status` endpoint, `--json`/`--watch`/`--quiet` flags. Has overlap with Spec G in `cli/status.ts` — dispatch Spec G first, then rebase Spec H atop merged G to avoid conflicts.
+
+## ForumMode v2 rollout (consolidated follow-ups)
+
+Three small follow-ups from Spec F (`docs/specs/supergroup-topics.md`, merged in PR #14) that are good candidates for one consolidated spec when forumMode is actually enabled in production and the real ergonomic gaps surface:
+
+- **Per-host slug prefix** (multi-machine: prepend `mac-juan/` or `win-juan/` to slug) — natural extension once multi-machine setup proves the need. Today the user develops between mac and Windows (per memory `project_multi_machine.md`); enabling forumMode without per-host prefix means same slug across hosts collides into the same topic. Becomes pressing the day forumMode is flipped on.
+- **`kuroboto topics list/prune` CLI helpers** — manual inspection/cleanup of `topics.json` when it drifts from actual Telegram state (topic deleted in client, topics.json out of sync). Today the recovery path is hand-edit JSON; not ideal but rare.
+- **Auto-archive on Stop hook** — when a Claude session ends (Stop hook fires), close the corresponding topic so the user's topic list doesn't grow unbounded across days/weeks of work. Cosmetic but the "close" action in Telegram already exists; just needs wiring.
+
+These three touch the same `TopicManager` + `topics.json` + slug derivation surface and would naturally fit one PR. Consolidate into `docs/specs/forum-mode-v2.md` when (a) the user has been on forumMode for a few days and (b) at least one of the three has surfaced a concrete annoyance worth fixing.
+
+Out of scope of this consolidated spec (kept separate for complexity reasons): **Migration tool DM→supergroup** — automated migration including reposting recent history. Heavier; manual migration is fine for now since it's a one-time operation.
 
 ## Extensible sleep finish-hooks (Level 2 of desktop notifications)
 
