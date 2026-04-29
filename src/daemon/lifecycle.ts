@@ -31,20 +31,14 @@ export interface RunningDaemon {
   stop(): Promise<void>;
 }
 
-export async function startDaemon(config: ConfigT): Promise<RunningDaemon> {
+export async function startDaemon(initialConfig: ConfigT): Promise<RunningDaemon> {
   await fsp.mkdir(CONFIG_DIR, { recursive: true });
   await fsp.mkdir(LOG_DIR, { recursive: true });
 
   await ensureNoExistingDaemon();
 
-  // Tmux validation only applies to the legacy strategy. PTY-strategy clients
-  // self-host their own PTY in `kuroboto claude`, so the daemon needs no
-  // multiplexer to start.
-  if (config.inject.enabled && config.inject.strategy === 'tmux') {
-    await validateTmuxAvailable(config.inject.session ?? 'claude');
-  }
-
   const logger = createLogger(LOG_DIR);
+  const config = await applyRuntimeFallbacks(initialConfig, logger);
   logger.info('daemon starting', { port: config.daemon.port });
 
   const channel = await makeChannel(config, logger);
@@ -224,6 +218,27 @@ function isProcessAlive(pid: number): boolean {
     return true;
   } catch {
     return false;
+  }
+}
+
+// Tmux is a legacy inject strategy. PTY-strategy clients self-host their own
+// PTY in `kuroboto claude`, so the daemon doesn't need a multiplexer at all.
+// When the user's persisted config still says `tmux` but tmux isn't available
+// (server died, session not running, binary missing), fall back to pty for
+// this run instead of refusing to start. The config file is left alone — a
+// transient tmux outage shouldn't rewrite their preference.
+async function applyRuntimeFallbacks(config: ConfigT, logger: Logger): Promise<ConfigT> {
+  if (!config.inject.enabled || config.inject.strategy !== 'tmux') return config;
+  try {
+    await validateTmuxAvailable(config.inject.session ?? 'claude');
+    return config;
+  } catch (e) {
+    const reason = (e as Error).message;
+    logger.warn('tmux strategy unavailable, falling back to pty', { err: reason });
+    process.stderr.write(
+      `[kuroboto] tmux unavailable (${reason}); falling back to pty for this run\n`,
+    );
+    return { ...config, inject: { ...config.inject, strategy: 'pty', session: undefined } };
   }
 }
 
