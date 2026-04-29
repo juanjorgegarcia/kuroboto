@@ -18,7 +18,7 @@ function randomSuffix(): string {
 
 function runGit(cwd: string, args: string[]): Promise<{ code: number; stdout: string; stderr: string }> {
   return new Promise((resolve) => {
-    const child = spawn('git', args, { cwd });
+    const child = spawn('git', args, { cwd, windowsHide: true });
     let stdout = '';
     let stderr = '';
     child.stdout.on('data', (b) => (stdout += b.toString()));
