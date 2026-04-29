@@ -16,6 +16,7 @@ import {
   type PromptFormatContext,
 } from './promptFormat.js';
 import { isQAPrompt } from './notificationDetect.js';
+import { injectViaPty } from '../inject/pty.js';
 
 export function registerRoutes(app: Express, ctx: DaemonContext): void {
   const fmtCtx = (): PromptFormatContext => ({
@@ -149,8 +150,76 @@ export function registerRoutes(app: Express, ctx: DaemonContext): void {
     res.json({ ok: true, cancelled });
   });
 
+  app.post('/v1/inject-clients', (req: Request, res: Response) => {
+    const body = (req.body ?? {}) as { slug?: unknown; pid?: unknown; cwd?: unknown; localPort?: unknown };
+    if (typeof body.slug !== 'string' || !body.slug) {
+      res.status(400).json({ error: 'slug required' });
+      return;
+    }
+    if (typeof body.pid !== 'number' || !Number.isFinite(body.pid)) {
+      res.status(400).json({ error: 'pid must be a number' });
+      return;
+    }
+    if (typeof body.cwd !== 'string' || !body.cwd) {
+      res.status(400).json({ error: 'cwd required' });
+      return;
+    }
+    if (typeof body.localPort !== 'number' || !Number.isFinite(body.localPort)) {
+      res.status(400).json({ error: 'localPort must be a number' });
+      return;
+    }
+    try {
+      ctx.injectClients.register({
+        slug: body.slug,
+        pid: body.pid,
+        cwd: body.cwd,
+        localPort: body.localPort,
+        registeredAt: Date.now(),
+      });
+    } catch (e) {
+      res.status(409).json({ error: (e as Error).message });
+      return;
+    }
+    appendAudit({
+      ts: new Date().toISOString(),
+      requestId: body.slug,
+      tool: 'inject',
+      cwd: body.cwd,
+      decision: 'ask',
+      reason: null,
+      source: 'client-registered',
+      remember: false,
+    }).catch((e) => ctx.logger.warn('audit append failed', { err: (e as Error).message }));
+    res.json({ ok: true, slug: body.slug });
+  });
+
+  app.delete('/v1/inject-clients/:slug', (req: Request, res: Response) => {
+    const slug = req.params.slug;
+    const had = ctx.injectClients.deregister(slug);
+    if (had) {
+      appendAudit({
+        ts: new Date().toISOString(),
+        requestId: slug,
+        tool: 'inject',
+        cwd: null,
+        decision: 'ask',
+        reason: null,
+        source: 'client-deregistered',
+        remember: false,
+      }).catch((e) => ctx.logger.warn('audit append failed', { err: (e as Error).message }));
+    }
+    res.json({ ok: true, removed: had });
+  });
+
+  app.get('/v1/inject-clients', (_req: Request, res: Response) => {
+    res.json(ctx.injectClients.list());
+  });
+
   app.post('/v1/notify', (req: Request, res: Response) => {
     const payload = req.body as NotificationPayload;
+    if (payload.session_id && payload.cwd) {
+      ctx.injectClients.bindSessionByCwd(payload.session_id, payload.cwd);
+    }
     if (shouldHandleAsQA(payload, ctx)) {
       // Fire-and-forget: the Q&A flow runs end-to-end (send question, await
       // reply, inject, audit) in the background. The hook just gets ack.
@@ -187,6 +256,9 @@ export function registerRoutes(app: Express, ctx: DaemonContext): void {
 
   app.post('/v1/permission', async (req: Request, res: Response) => {
     const payload = req.body as PreToolUsePayload;
+    if (payload.session_id && payload.cwd) {
+      ctx.injectClients.bindSessionByCwd(payload.session_id, payload.cwd);
+    }
     const gamingSnap = ctx.state.gaming.snapshot();
     if (gamingSnap.active && !ctx.config.policy.gamingAlwaysAsk.includes(payload.tool_name)) {
       const decision: Decision = { decision: 'allow', reason: 'gaming' };
@@ -314,7 +386,9 @@ function expandHome(p: string): string {
 
 function shouldHandleAsQA(payload: NotificationPayload, ctx: DaemonContext): boolean {
   if (!ctx.config.inject.enabled) return false;
-  if (!ctx.inject) return false;
+  // tmux strategy needs the legacy InjectStrategy; pty strategy doesn't (the
+  // inject step looks up a registered CLI by session_id at reply time).
+  if (ctx.config.inject.strategy === 'tmux' && !ctx.inject) return false;
   if (!isQAPrompt(payload.message)) return false;
   // Sleep mode is autonomous: if Claude pauses inside a sleep worktree, it's
   // a stuck session — fall through to the regular notif path so the user can
@@ -333,8 +407,6 @@ async function handleQAPrompt(
   ctx: DaemonContext,
   fmtCtx: PromptFormatContext,
 ): Promise<void> {
-  const inject = ctx.inject;
-  if (!inject) return; // already gated upstream, but keeps types honest
   const text = await formatQAPrompt(payload, fmtCtx);
   let sentMessageId: string;
   try {
@@ -380,8 +452,8 @@ async function handleQAPrompt(
     return;
   }
 
-  try {
-    await inject.inject(reply);
+  const result = await dispatchInject(payload, reply, ctx);
+  if (result.ok) {
     void appendAudit({
       ts: new Date().toISOString(),
       requestId: sentMessageId,
@@ -395,20 +467,60 @@ async function handleQAPrompt(
     await ctx.channel
       .sendNotification('✅ Reply injetada')
       .catch((e) => ctx.logger.warn('sendNotification (qa-injected) failed', { err: (e as Error).message }));
+    return;
+  }
+  void appendAudit({
+    ts: new Date().toISOString(),
+    requestId: sentMessageId,
+    tool: 'Q&A',
+    cwd: payload.cwd ?? null,
+    decision: 'deny',
+    reason: result.reason,
+    source: 'qa-inject-failed',
+    remember: false,
+  }).catch((e2) => ctx.logger.warn('audit append failed', { err: (e2 as Error).message }));
+  await ctx.channel
+    .sendNotification(`❌ Inject falhou: ${result.reason}\n\nSua reply foi:\n${reply}`)
+    .catch((e2) => ctx.logger.warn('sendNotification (qa-inject-failed) failed', { err: (e2 as Error).message }));
+}
+
+/**
+ * Routes a Q&A reply to the right injection backend based on
+ * `config.inject.strategy`. PTY: look up the registered CLI by session_id
+ * (with a cwd-based late-bind fallback) and POST /inject. Tmux: call the
+ * legacy strategy. Returns a normalised result either way; errors become
+ * the user-facing fallback message.
+ */
+async function dispatchInject(
+  payload: NotificationPayload,
+  reply: string,
+  ctx: DaemonContext,
+): Promise<{ ok: true } | { ok: false; reason: string }> {
+  if (ctx.config.inject.strategy === 'tmux') {
+    if (!ctx.inject) return { ok: false, reason: 'tmux strategy enabled but inject strategy not initialised' };
+    try {
+      await ctx.inject.inject(reply);
+      return { ok: true };
+    } catch (e) {
+      return { ok: false, reason: (e as Error).message };
+    }
+  }
+  // PTY strategy
+  let client = ctx.injectClients.lookupBySession(payload.session_id);
+  if (!client && payload.cwd) {
+    ctx.injectClients.bindSessionByCwd(payload.session_id, payload.cwd);
+    client = ctx.injectClients.lookupBySession(payload.session_id);
+  }
+  if (!client) {
+    return { ok: false, reason: 'no client registered for this session' };
+  }
+  try {
+    await injectViaPty(client, reply, { authToken: ctx.config.daemon.authToken });
+    return { ok: true };
   } catch (e) {
-    const errMsg = (e as Error).message;
-    void appendAudit({
-      ts: new Date().toISOString(),
-      requestId: sentMessageId,
-      tool: 'Q&A',
-      cwd: payload.cwd ?? null,
-      decision: 'deny',
-      reason: errMsg,
-      source: 'qa-inject-failed',
-      remember: false,
-    }).catch((e2) => ctx.logger.warn('audit append failed', { err: (e2 as Error).message }));
-    await ctx.channel
-      .sendNotification(`❌ Inject falhou: ${errMsg}\n\nSua reply foi:\n${reply}`)
-      .catch((e2) => ctx.logger.warn('sendNotification (qa-inject-failed) failed', { err: (e2 as Error).message }));
+    // CLI is unreachable — drop the registration so future replies fall
+    // through fast instead of timing out on a dead port.
+    ctx.injectClients.deregister(client.slug);
+    return { ok: false, reason: (e as Error).message };
   }
 }

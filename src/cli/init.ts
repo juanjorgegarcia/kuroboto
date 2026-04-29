@@ -71,25 +71,17 @@ export async function initCommand(): Promise<void> {
   });
   const port = (portAns.val as number) ?? 47891;
 
-  console.log(chalk.cyan('\nQ&A inject (tmux): permite responder no Telegram quando o Claude pausa pedindo input livre.'));
-  console.log('Requer tmux instalado e o Claude rodando dentro de uma sessão tmux.');
+  console.log(chalk.cyan('\nQ&A inject (PTY): responda no Telegram quando o Claude pausa pedindo input livre.'));
+  console.log('Use `kuroboto claude` para rodar dentro do PTY que recebe as respostas.');
   const injectAns = await prompts({
     type: 'confirm',
     name: 'val',
-    message: 'Habilitar inject via tmux? (default: não)',
-    initial: false,
+    message: 'Habilitar Q&A (inject via PTY)?',
+    initial: true,
   });
-  let inject: ConfigT['inject'] = { enabled: false, replyTimeoutMs: 7_200_000 };
-  if (injectAns.val === true) {
-    const sessionAns = await prompts({
-      type: 'text',
-      name: 'val',
-      message: 'Nome da sessão tmux:',
-      initial: 'claude',
-    });
-    const session = ((sessionAns.val as string) ?? 'claude').trim() || 'claude';
-    inject = { enabled: true, strategy: 'tmux', session, replyTimeoutMs: 7_200_000 };
-  }
+  const inject: ConfigT['inject'] = injectAns.val === true
+    ? { enabled: true, strategy: 'pty', replyTimeoutMs: 7_200_000 }
+    : { enabled: false, strategy: 'pty', replyTimeoutMs: 7_200_000 };
 
   console.log(chalk.cyan('\nDesktop notifications: toast nativa do SO quando o sleep mode termina (sucesso, falha ou timeout).'));
   const desktopAns = await prompts({

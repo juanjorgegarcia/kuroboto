@@ -9,6 +9,7 @@ import type { PendingReplies } from './pendingReplies.js';
 import type { Mode } from './state.js';
 import { GamingState } from './gaming.js';
 import { SleepingOrchestrator } from './sleeping.js';
+import type { InjectClients } from './injectClients.js';
 import { registerRoutes } from './routes.js';
 
 export interface DaemonContext {
@@ -18,6 +19,7 @@ export interface DaemonContext {
   pendingNotifications: PendingNotifications;
   pendingReplies: PendingReplies;
   inject: InjectStrategy | null;
+  injectClients: InjectClients;
   state: { mode: Mode; gaming: GamingState; sleeping: SleepingOrchestrator };
   logger: Logger;
   startedAt: number;

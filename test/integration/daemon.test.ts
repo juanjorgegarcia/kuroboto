@@ -3,6 +3,7 @@ import request from 'supertest';
 import fsp from 'node:fs/promises';
 import path from 'node:path';
 import os from 'node:os';
+import http from 'node:http';
 import { createServer, type DaemonContext } from '../../src/daemon/server.js';
 import { PendingMap } from '../../src/daemon/pending.js';
 import { PendingNotifications } from '../../src/daemon/pendingNotifications.js';
@@ -12,6 +13,7 @@ import * as stateModule from '../../src/daemon/state.js';
 import type { Mode } from '../../src/daemon/state.js';
 import { GamingState } from '../../src/daemon/gaming.js';
 import { SleepingOrchestrator } from '../../src/daemon/sleeping.js';
+import { InjectClients } from '../../src/daemon/injectClients.js';
 import type { InjectStrategy } from '../../src/inject/index.js';
 import { MockChannel, noopLogger } from '../helpers/mockChannel.js';
 
@@ -34,6 +36,7 @@ function makeContext(overrides: Overrides = {}): {
   ctx: DaemonContext;
   channel: MockChannel;
   pendingReplies: PendingReplies;
+  injectClients: InjectClients;
 } {
   const channel = new MockChannel();
   const config: ConfigT = {
@@ -63,6 +66,7 @@ function makeContext(overrides: Overrides = {}): {
     removeWorktree: async () => {},
     onSuccess: async () => {},
   });
+  const injectClients = new InjectClients();
   const ctx: DaemonContext = {
     config,
     channel,
@@ -70,6 +74,7 @@ function makeContext(overrides: Overrides = {}): {
     pendingNotifications,
     pendingReplies,
     inject: overrides.injectStrategy ?? null,
+    injectClients,
     state: { mode: overrides.mode ?? 'here', gaming, sleeping },
     logger: noopLogger,
     startedAt: Date.now(),
@@ -79,7 +84,7 @@ function makeContext(overrides: Overrides = {}): {
   channel.on('freeText', (e) => {
     if (e.replyToMessageId) pendingReplies.resolveBySentMessageId(e.replyToMessageId, e.text);
   });
-  return { ctx, channel, pendingReplies };
+  return { ctx, channel, pendingReplies, injectClients };
 }
 
 async function waitFor(cond: () => boolean, timeoutMs = 1_000): Promise<void> {
@@ -817,5 +822,242 @@ describe('Q&A flow (tmux inject)', () => {
     await waitFor(() => channel.sentNotifications.length === 1);
     expect(channel.sentQuestions.length).toBe(0);
     expect(fake.calls).toEqual([]);
+  });
+});
+
+describe('inject-clients endpoints', () => {
+  it('POST registers a CLI; GET lists it', async () => {
+    const { ctx } = makeContext();
+    const app = createServer(ctx);
+    const reg = await request(app)
+      .post('/v1/inject-clients')
+      .set('X-Kuroboto-Token', TEST_TOKEN)
+      .send({ slug: 'cli-1', pid: 1234, cwd: '/x/proj', localPort: 51234 });
+    expect(reg.status).toBe(200);
+    expect(reg.body).toMatchObject({ ok: true, slug: 'cli-1' });
+
+    const list = await request(app)
+      .get('/v1/inject-clients')
+      .set('X-Kuroboto-Token', TEST_TOKEN);
+    expect(list.status).toBe(200);
+    expect(list.body).toHaveLength(1);
+    expect(list.body[0]).toMatchObject({ slug: 'cli-1', pid: 1234, cwd: '/x/proj', localPort: 51234, sessions: [] });
+  });
+
+  it('POST returns 409 on slug collision (different pid)', async () => {
+    const { ctx } = makeContext();
+    const app = createServer(ctx);
+    await request(app)
+      .post('/v1/inject-clients')
+      .set('X-Kuroboto-Token', TEST_TOKEN)
+      .send({ slug: 'cli-1', pid: 1, cwd: '/x', localPort: 5000 });
+    const collide = await request(app)
+      .post('/v1/inject-clients')
+      .set('X-Kuroboto-Token', TEST_TOKEN)
+      .send({ slug: 'cli-1', pid: 2, cwd: '/x', localPort: 5001 });
+    expect(collide.status).toBe(409);
+    expect(collide.body.error).toMatch(/already in use by PID 1/);
+  });
+
+  it('POST 400 on missing fields', async () => {
+    const { ctx } = makeContext();
+    const app = createServer(ctx);
+    const r = await request(app)
+      .post('/v1/inject-clients')
+      .set('X-Kuroboto-Token', TEST_TOKEN)
+      .send({ slug: 'x' });
+    expect(r.status).toBe(400);
+  });
+
+  it('DELETE removes a registered CLI', async () => {
+    const { ctx } = makeContext();
+    const app = createServer(ctx);
+    await request(app)
+      .post('/v1/inject-clients')
+      .set('X-Kuroboto-Token', TEST_TOKEN)
+      .send({ slug: 'cli-1', pid: 1, cwd: '/x', localPort: 5000 });
+    const del = await request(app)
+      .delete('/v1/inject-clients/cli-1')
+      .set('X-Kuroboto-Token', TEST_TOKEN);
+    expect(del.status).toBe(200);
+    expect(del.body).toEqual({ ok: true, removed: true });
+
+    const list = await request(app)
+      .get('/v1/inject-clients')
+      .set('X-Kuroboto-Token', TEST_TOKEN);
+    expect(list.body).toHaveLength(0);
+  });
+
+  it('endpoints require auth token', async () => {
+    const { ctx } = makeContext();
+    const app = createServer(ctx);
+    const r = await request(app).get('/v1/inject-clients');
+    expect(r.status).toBe(401);
+  });
+});
+
+describe('Q&A flow (PTY inject)', () => {
+  let tmpDir: string;
+
+  beforeEach(async () => {
+    tmpDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'kuroboto-qa-pty-'));
+  });
+  afterEach(async () => {
+    await fsp.rm(tmpDir, { recursive: true, force: true });
+  });
+
+  async function writeTranscript(name: string, lines: unknown[]): Promise<string> {
+    const file = path.join(tmpDir, name);
+    await fsp.writeFile(file, lines.map((l) => JSON.stringify(l)).join('\n'));
+    return file;
+  }
+
+  it('Notification with cwd matching a registered CLI binds session_id → slug', async () => {
+    const { ctx, injectClients } = makeContext({
+      mode: 'away',
+      inject: { enabled: true, strategy: 'pty', replyTimeoutMs: 60_000 },
+    });
+    injectClients.register({ slug: 'foo', pid: 1, cwd: '/x/proj', localPort: 60000, registeredAt: Date.now() });
+    const app = createServer(ctx);
+    await request(app)
+      .post('/v1/notify')
+      .set('X-Kuroboto-Token', TEST_TOKEN)
+      .send({
+        hook_event_name: 'Notification',
+        session_id: 'sess-A',
+        message: 'plain notice',
+        cwd: '/x/proj',
+      });
+    await new Promise((r) => setImmediate(r));
+    expect(injectClients.lookupBySession('sess-A')?.slug).toBe('foo');
+  });
+
+  it('PreToolUse with cwd matching a registered CLI binds session_id → slug', async () => {
+    const { ctx, injectClients } = makeContext({ mode: 'here' });
+    injectClients.register({ slug: 'foo', pid: 1, cwd: '/x/proj', localPort: 60000, registeredAt: Date.now() });
+    const app = createServer(ctx);
+    await request(app)
+      .post('/v1/permission')
+      .set('X-Kuroboto-Token', TEST_TOKEN)
+      .send({
+        hook_event_name: 'PreToolUse',
+        session_id: 'sess-B',
+        tool_name: 'Bash',
+        tool_input: { command: 'ls' },
+        cwd: '/x/proj',
+      });
+    expect(injectClients.lookupBySession('sess-B')?.slug).toBe('foo');
+  });
+
+  it('Q&A reply routes to the registered CLI via /inject', async () => {
+    const transcript = await writeTranscript('q.jsonl', [
+      { role: 'user', content: 'fix it' },
+      { role: 'assistant', content: 'Quero rodar A ou B?' },
+    ]);
+
+    // Stand up a fake CLI HTTP server
+    const received: string[] = [];
+    const cli = http.createServer((req, res) => {
+      let body = '';
+      req.on('data', (b: Buffer) => { body += b.toString(); });
+      req.on('end', () => {
+        if (req.headers['x-kuroboto-token'] !== TEST_TOKEN) {
+          res.statusCode = 401; res.end(); return;
+        }
+        const parsed = JSON.parse(body) as { text: string };
+        received.push(parsed.text);
+        res.statusCode = 200;
+        res.setHeader('Content-Type', 'application/json');
+        res.end(JSON.stringify({ ok: true }));
+      });
+    });
+    await new Promise<void>((resolve) => cli.listen(0, '127.0.0.1', () => resolve()));
+    const cliPort = (cli.address() as { port: number }).port;
+
+    try {
+      const { ctx, channel, injectClients, pendingReplies } = makeContext({
+        mode: 'away',
+        inject: { enabled: true, strategy: 'pty', replyTimeoutMs: 60_000 },
+      });
+      injectClients.register({ slug: 'foo', pid: 1, cwd: '/x/proj', localPort: cliPort, registeredAt: Date.now() });
+
+      const app = createServer(ctx);
+      await request(app)
+        .post('/v1/notify')
+        .set('X-Kuroboto-Token', TEST_TOKEN)
+        .send({
+          hook_event_name: 'Notification',
+          session_id: 'sess-1',
+          message: 'Claude is waiting for your input',
+          cwd: '/x/proj',
+          transcript_path: transcript,
+        });
+      await waitFor(() => channel.sentQuestions.length === 1);
+      await waitFor(() => pendingReplies.size() === 1);
+      channel.emitFreeText('A', '1000');
+      await waitFor(() => received.length === 1);
+      expect(received).toEqual(['A']);
+      await waitFor(() => channel.sentNotifications.includes('✅ Reply injetada'));
+    } finally {
+      await new Promise<void>((resolve) => cli.close(() => resolve()));
+    }
+  });
+
+  it('Q&A reply with no registered client → ❌ Inject falhou: no client', async () => {
+    const transcript = await writeTranscript('q2.jsonl', [
+      { role: 'user', content: 'help' },
+      { role: 'assistant', content: 'pick one' },
+    ]);
+    const { ctx, channel, pendingReplies } = makeContext({
+      mode: 'away',
+      inject: { enabled: true, strategy: 'pty', replyTimeoutMs: 60_000 },
+    });
+    const app = createServer(ctx);
+    await request(app)
+      .post('/v1/notify')
+      .set('X-Kuroboto-Token', TEST_TOKEN)
+      .send({
+        hook_event_name: 'Notification',
+        session_id: 'sess-X',
+        message: 'Claude is waiting for your input',
+        cwd: '/x/none',
+        transcript_path: transcript,
+      });
+    await waitFor(() => channel.sentQuestions.length === 1);
+    await waitFor(() => pendingReplies.size() === 1);
+    channel.emitFreeText('B', '1000');
+    await waitFor(() => channel.sentNotifications.some((n) => n.startsWith('❌ Inject falhou')));
+    const fail = channel.sentNotifications.find((n) => n.startsWith('❌ Inject falhou'))!;
+    expect(fail).toContain('no client registered for this session');
+    expect(fail).toContain('Sua reply foi:\nB');
+  });
+
+  it('Q&A reply: CLI port dead → drop registration, fall back, audit qa-inject-failed', async () => {
+    const transcript = await writeTranscript('q3.jsonl', [
+      { role: 'user', content: 'help' },
+      { role: 'assistant', content: 'pick' },
+    ]);
+    const { ctx, channel, injectClients, pendingReplies } = makeContext({
+      mode: 'away',
+      inject: { enabled: true, strategy: 'pty', replyTimeoutMs: 60_000 },
+    });
+    // localPort 1 is virtually guaranteed to be unreachable
+    injectClients.register({ slug: 'foo', pid: 1, cwd: '/x/dead', localPort: 1, registeredAt: Date.now() });
+    const app = createServer(ctx);
+    await request(app)
+      .post('/v1/notify')
+      .set('X-Kuroboto-Token', TEST_TOKEN)
+      .send({
+        hook_event_name: 'Notification',
+        session_id: 'sess-D',
+        message: 'Claude is waiting for your input',
+        cwd: '/x/dead',
+        transcript_path: transcript,
+      });
+    await waitFor(() => channel.sentQuestions.length === 1);
+    await waitFor(() => pendingReplies.size() === 1);
+    channel.emitFreeText('C', '1000');
+    await waitFor(() => channel.sentNotifications.some((n) => n.startsWith('❌ Inject falhou')), 5000);
+    expect(injectClients.list()).toEqual([]); // dropped
   });
 });

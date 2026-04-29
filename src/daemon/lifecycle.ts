@@ -6,7 +6,7 @@ import type { Channel } from '../channels/Channel.js';
 import type { ConfigT } from '../config/schema.js';
 import { TelegramChannel } from '../channels/telegram/TelegramChannel.js';
 import { createLogger, type Logger } from '../core/logger.js';
-import { CONFIG_DIR, LOG_DIR, PID_FILE } from '../config/paths.js';
+import { CONFIG_DIR, LOG_DIR, PID_FILE, DAEMON_SENTINEL_FILE } from '../config/paths.js';
 import { DaemonError } from '../core/errors.js';
 import { PendingMap } from './pending.js';
 import { PendingNotifications } from './pendingNotifications.js';
@@ -20,6 +20,7 @@ import { notifyDesktop, type DesktopNotifyOpts } from '../notify/desktop.js';
 import { createServer, type DaemonContext } from './server.js';
 import { createInjectStrategy } from '../inject/index.js';
 import { validateTmuxAvailable } from '../inject/validate.js';
+import { InjectClients } from './injectClients.js';
 
 export interface RunningDaemon {
   stop(): Promise<void>;
@@ -31,7 +32,10 @@ export async function startDaemon(config: ConfigT): Promise<RunningDaemon> {
 
   await ensureNoExistingDaemon();
 
-  if (config.inject.enabled) {
+  // Tmux validation only applies to the legacy strategy. PTY-strategy clients
+  // self-host their own PTY in `kuroboto claude`, so the daemon needs no
+  // multiplexer to start.
+  if (config.inject.enabled && config.inject.strategy === 'tmux') {
     await validateTmuxAvailable(config.inject.session ?? 'claude');
   }
 
@@ -44,6 +48,7 @@ export async function startDaemon(config: ConfigT): Promise<RunningDaemon> {
   const pendingNotifications = new PendingNotifications();
   const pendingReplies = new PendingReplies();
   const inject = createInjectStrategy(config.inject);
+  const injectClients = new InjectClients();
   const initialMode: Mode = await loadMode();
   const gaming = new GamingState();
   // shell:false so --body markdown passes through verbatim. Node 16+ resolves
@@ -105,6 +110,7 @@ export async function startDaemon(config: ConfigT): Promise<RunningDaemon> {
     pendingNotifications,
     pendingReplies,
     inject,
+    injectClients,
     state,
     logger,
     startedAt: Date.now(),
@@ -117,6 +123,17 @@ export async function startDaemon(config: ConfigT): Promise<RunningDaemon> {
   });
 
   await fsp.writeFile(PID_FILE, String(process.pid));
+  // Sentinel for `kuroboto claude` CLI processes: lets them find the daemon
+  // port and re-register themselves on daemon restart via fs.watch.
+  try {
+    await fsp.writeFile(
+      DAEMON_SENTINEL_FILE,
+      JSON.stringify({ pid: process.pid, port: config.daemon.port, startedAt: new Date().toISOString() }),
+      { mode: 0o600 },
+    );
+  } catch (e) {
+    logger.warn('daemon sentinel write failed', { err: (e as Error).message });
+  }
   logger.info('daemon ready', { pid: process.pid });
 
   let stopped = false;
@@ -138,6 +155,11 @@ export async function startDaemon(config: ConfigT): Promise<RunningDaemon> {
     await channel.stop();
     try {
       await fsp.unlink(PID_FILE);
+    } catch {
+      // best-effort
+    }
+    try {
+      await fsp.unlink(DAEMON_SENTINEL_FILE);
     } catch {
       // best-effort
     }
