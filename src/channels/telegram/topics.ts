@@ -1,5 +1,38 @@
 import fsp from 'node:fs/promises';
 import type { Logger } from '../../core/logger.js';
+import type { ChannelContext } from '../Channel.js';
+
+export const SYSTEM_TOPIC_KEY = 'kuroboto-system';
+const SLEEP_SLUG_SUFFIX_RE = /-[a-z0-9]{6}$/;
+
+/**
+ * Resolves a `ChannelContext` to the `(key, name)` pair the TopicManager
+ * uses for forum topics. Centralized so both routing and tests share the
+ * exact mapping rules from spec F.
+ *
+ *   slug + isSleep  → key=slug,    name=`💤 <slug-without-suffix>`
+ *   slug            → key=slug,    name=slug
+ *   sessionId       → key=sessionId, name=`<basename>-<sid8>`
+ *   system / empty  → key="kuroboto-system", name="kuroboto-system"
+ */
+export function pickTopicKey(ctx: ChannelContext | undefined): { key: string; name: string } {
+  if (!ctx || ctx.system) {
+    return { key: SYSTEM_TOPIC_KEY, name: SYSTEM_TOPIC_KEY };
+  }
+  if (ctx.slug) {
+    if (ctx.isSleep) {
+      const stripped = ctx.slug.replace(SLEEP_SLUG_SUFFIX_RE, '');
+      return { key: ctx.slug, name: `💤 ${stripped}` };
+    }
+    return { key: ctx.slug, name: ctx.slug };
+  }
+  if (ctx.sessionId) {
+    const sid8 = ctx.sessionId.slice(0, 8);
+    const basename = ctx.cwdBasename ?? 'session';
+    return { key: ctx.sessionId, name: `${basename}-${sid8}` };
+  }
+  return { key: SYSTEM_TOPIC_KEY, name: SYSTEM_TOPIC_KEY };
+}
 
 export type TopicAuditSource =
   | 'topic-created'

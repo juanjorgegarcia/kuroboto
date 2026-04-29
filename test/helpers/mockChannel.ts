@@ -1,14 +1,30 @@
 import type {
   Channel,
+  ChannelContext,
   ChannelEventHandlers,
   ChannelEventName,
 } from '../../src/channels/Channel.js';
 import type { PromptRequest, QuestionRequest, Decision } from '../../src/core/types.js';
 
+interface SentNotification {
+  text: string;
+  ctx?: ChannelContext;
+}
+
+interface SentPrompt {
+  req: PromptRequest;
+  ctx?: ChannelContext;
+}
+
+interface SentQuestion {
+  req: QuestionRequest;
+  ctx?: ChannelContext;
+}
+
 export class MockChannel implements Channel {
-  public sentNotifications: string[] = [];
-  public sentPrompts: PromptRequest[] = [];
-  public sentQuestions: QuestionRequest[] = [];
+  public sentNotificationsDetailed: SentNotification[] = [];
+  public sentPromptsDetailed: SentPrompt[] = [];
+  public sentQuestionsDetailed: SentQuestion[] = [];
   public throwOnSendPrompt = false;
   public throwOnSendQuestion = false;
   private nextSentMessageId = 1000;
@@ -17,21 +33,39 @@ export class MockChannel implements Channel {
     freeText: [],
   };
 
+  /** Back-compat shorthand used by older tests — text array. */
+  get sentNotifications(): string[] {
+    return this.sentNotificationsDetailed.map((n) => n.text);
+  }
+
+  /** Back-compat shorthand used by older tests — prompt requests. */
+  get sentPrompts(): PromptRequest[] {
+    return this.sentPromptsDetailed.map((p) => p.req);
+  }
+
+  /** Back-compat shorthand used by older tests — question requests. */
+  get sentQuestions(): QuestionRequest[] {
+    return this.sentQuestionsDetailed.map((q) => q.req);
+  }
+
   async start(): Promise<void> {}
   async stop(): Promise<void> {}
 
-  async sendNotification(text: string): Promise<void> {
-    this.sentNotifications.push(text);
+  async sendNotification(text: string, ctx?: ChannelContext): Promise<void> {
+    this.sentNotificationsDetailed.push({ text, ctx });
   }
 
-  async sendPrompt(req: PromptRequest): Promise<void> {
+  async sendPrompt(req: PromptRequest, ctx?: ChannelContext): Promise<void> {
     if (this.throwOnSendPrompt) throw new Error('mock channel error');
-    this.sentPrompts.push(req);
+    this.sentPromptsDetailed.push({ req, ctx });
   }
 
-  async sendQuestion(req: QuestionRequest): Promise<{ sentMessageId: string }> {
+  async sendQuestion(
+    req: QuestionRequest,
+    ctx?: ChannelContext,
+  ): Promise<{ sentMessageId: string }> {
     if (this.throwOnSendQuestion) throw new Error('mock channel error');
-    this.sentQuestions.push(req);
+    this.sentQuestionsDetailed.push({ req, ctx });
     return { sentMessageId: String(this.nextSentMessageId++) };
   }
 

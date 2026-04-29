@@ -23,6 +23,11 @@ export interface InlineKeyboardButton {
   callback_data: string;
 }
 
+export interface ChatMember {
+  status: string;
+  can_manage_topics?: boolean;
+}
+
 export class TelegramApi {
   constructor(private readonly token: string) {}
 
@@ -50,13 +55,21 @@ export class TelegramApi {
   async sendMessage(
     chatId: number,
     text: string,
-    opts?: { keyboard?: InlineKeyboardButton[][]; forceReply?: boolean; timeoutMs?: number },
+    opts?: {
+      keyboard?: InlineKeyboardButton[][];
+      forceReply?: boolean;
+      timeoutMs?: number;
+      messageThreadId?: number;
+    },
   ): Promise<number> {
     const timeoutMs = opts?.timeoutMs ?? 10_000;
     const ctrl = new AbortController();
     const timer = setTimeout(() => ctrl.abort(), timeoutMs);
     try {
       const body: Record<string, unknown> = { chat_id: chatId, text };
+      if (opts?.messageThreadId !== undefined) {
+        body.message_thread_id = opts.messageThreadId;
+      }
       if (opts?.keyboard) {
         body.reply_markup = { inline_keyboard: opts.keyboard };
       } else if (opts?.forceReply) {
@@ -71,16 +84,12 @@ export class TelegramApi {
         body: JSON.stringify(body),
         signal: ctrl.signal,
       });
-      if (!res.ok) {
-        throw new ChannelError(`sendMessage HTTP ${res.status}`);
-      }
-      const json = (await res.json()) as {
-        ok: boolean;
-        result?: { message_id: number };
-        description?: string;
-      };
-      if (!json.ok || !json.result) {
-        throw new ChannelError(`telegram: ${json.description ?? 'unknown error'}`);
+      const json = (await res.json().catch(() => null)) as
+        | { ok: boolean; result?: { message_id: number }; description?: string }
+        | null;
+      if (!res.ok || !json?.ok || !json.result) {
+        const desc = json?.description ?? `HTTP ${res.status}`;
+        throw new ChannelError(`telegram: ${desc}`);
       }
       return json.result.message_id;
     } finally {
@@ -136,4 +145,77 @@ export class TelegramApi {
       clearTimeout(timer);
     }
   }
+
+  async createForumTopic(chatId: number, name: string, timeoutMs = 10_000): Promise<number> {
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), timeoutMs);
+    try {
+      const res = await fetch(this.url('createForumTopic'), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ chat_id: chatId, name }),
+        signal: ctrl.signal,
+      });
+      const json = (await res.json().catch(() => null)) as
+        | { ok: boolean; result?: { message_thread_id: number }; description?: string }
+        | null;
+      if (!res.ok || !json?.ok || !json.result) {
+        const desc = json?.description ?? `HTTP ${res.status}`;
+        throw new ChannelError(`telegram: ${desc}`);
+      }
+      return json.result.message_thread_id;
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
+  async getMe(timeoutMs = 5_000): Promise<{ id: number }> {
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), timeoutMs);
+    try {
+      const res = await fetch(this.url('getMe'), { signal: ctrl.signal });
+      const json = (await res.json().catch(() => null)) as
+        | { ok: boolean; result?: { id: number }; description?: string }
+        | null;
+      if (!res.ok || !json?.ok || !json.result) {
+        const desc = json?.description ?? `HTTP ${res.status}`;
+        throw new ChannelError(`telegram: ${desc}`);
+      }
+      return { id: json.result.id };
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
+  async getChatMember(chatId: number, userId: number, timeoutMs = 5_000): Promise<ChatMember> {
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), timeoutMs);
+    try {
+      const res = await fetch(this.url('getChatMember'), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ chat_id: chatId, user_id: userId }),
+        signal: ctrl.signal,
+      });
+      const json = (await res.json().catch(() => null)) as
+        | { ok: boolean; result?: ChatMember; description?: string }
+        | null;
+      if (!res.ok || !json?.ok || !json.result) {
+        const desc = json?.description ?? `HTTP ${res.status}`;
+        throw new ChannelError(`telegram: ${desc}`);
+      }
+      return json.result;
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+}
+
+/**
+ * Returns true when an error matches Telegram's "message thread not found"
+ * 400 — the signal that a previously-cached topic was deleted client-side.
+ */
+export function isThreadNotFoundError(e: unknown): boolean {
+  if (!(e instanceof Error)) return false;
+  return /message thread not found/i.test(e.message);
 }

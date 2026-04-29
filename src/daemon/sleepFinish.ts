@@ -1,5 +1,6 @@
 import type { SleepingSession } from './sleeping.js';
 import type { DesktopNotifyOpts } from '../notify/desktop.js';
+import type { ChannelContext } from '../channels/Channel.js';
 
 export interface ExecResult {
   code: number;
@@ -15,7 +16,7 @@ export type ExecFn = (
 
 export interface FinishDeps {
   exec: ExecFn;
-  notify: (msg: string) => Promise<void>;
+  notify: (msg: string, ctx?: ChannelContext) => Promise<void>;
   notifyDesktop?: (opts: DesktopNotifyOpts) => Promise<void>;
 }
 
@@ -46,6 +47,7 @@ function buildBody(session: SleepingSession): string {
 }
 
 export async function finishSleep(session: SleepingSession, deps: FinishDeps): Promise<void> {
+  const topicCtx: ChannelContext = { slug: session.slug, isSleep: true };
   // 1. Push branch from the worktree
   const push = await deps.exec('git', ['push', '-u', 'origin', session.branch], {
     cwd: session.worktreePath,
@@ -54,6 +56,7 @@ export async function finishSleep(session: SleepingSession, deps: FinishDeps): P
     await deps.notify(
       `❌ sleep finalize failed — push failed: ${push.stderr.trim() || 'unknown'}. ` +
         `worktree: ${session.worktreePath}`,
+      topicCtx,
     );
     if (deps.notifyDesktop) {
       await deps.notifyDesktop({
@@ -87,6 +90,7 @@ export async function finishSleep(session: SleepingSession, deps: FinishDeps): P
     await deps.notify(
       `❌ sleep finalize failed — pr create failed: ${create.stderr.trim() || 'unknown'}. ` +
         `worktree: ${session.worktreePath}`,
+      topicCtx,
     );
     if (deps.notifyDesktop) {
       await deps.notifyDesktop({
@@ -101,6 +105,7 @@ export async function finishSleep(session: SleepingSession, deps: FinishDeps): P
   const url = create.stdout.trim().split('\n').pop() ?? '';
   await deps.notify(
     `✅ sleep done — PR: ${url}\n\nTest plan in the PR body. Worktree: ${session.worktreePath}`,
+    topicCtx,
   );
   if (deps.notifyDesktop) {
     await deps.notifyDesktop({

@@ -5,8 +5,11 @@ import { spawn as nodeSpawn, type SpawnOptions } from 'node:child_process';
 import type { Channel } from '../channels/Channel.js';
 import type { ConfigT } from '../config/schema.js';
 import { TelegramChannel } from '../channels/telegram/TelegramChannel.js';
+import { TelegramApi } from '../channels/telegram/api.js';
+import { TopicManager, type TopicAuditEvent } from '../channels/telegram/topics.js';
+import { validateBotPermissions } from '../channels/telegram/forumValidation.js';
 import { createLogger, type Logger } from '../core/logger.js';
-import { CONFIG_DIR, LOG_DIR, PID_FILE, DAEMON_SENTINEL_FILE } from '../config/paths.js';
+import { CONFIG_DIR, LOG_DIR, PID_FILE, DAEMON_SENTINEL_FILE, TOPICS_FILE } from '../config/paths.js';
 import { DaemonError } from '../core/errors.js';
 import { PendingMap } from './pending.js';
 import { PendingNotifications } from './pendingNotifications.js';
@@ -21,6 +24,8 @@ import { createServer, type DaemonContext } from './server.js';
 import { createInjectStrategy } from '../inject/index.js';
 import { validateTmuxAvailable } from '../inject/validate.js';
 import { InjectClients } from './injectClients.js';
+import { appendAudit } from './audit.js';
+import { topicContextSystem } from './topicContext.js';
 
 export interface RunningDaemon {
   stop(): Promise<void>;
@@ -42,7 +47,7 @@ export async function startDaemon(config: ConfigT): Promise<RunningDaemon> {
   const logger = createLogger(LOG_DIR);
   logger.info('daemon starting', { port: config.daemon.port });
 
-  const channel = makeChannel(config, logger);
+  const channel = await makeChannel(config, logger);
   const pending = new PendingMap();
   pending.startCleanupLoop();
   const pendingNotifications = new PendingNotifications();
@@ -66,7 +71,7 @@ export async function startDaemon(config: ConfigT): Promise<RunningDaemon> {
   const sleeping = new SleepingOrchestrator({
     spawn: claudeSpawn,
     gaming,
-    notify: (msg) => channel.sendNotification(msg),
+    notify: (msg, ctx) => channel.sendNotification(msg, ctx),
     audit: async () => {}, // skip audit at daemon level; sleep events go to Telegram
     createWorktree,
     removeWorktree,
@@ -84,7 +89,7 @@ export async function startDaemon(config: ConfigT): Promise<RunningDaemon> {
             child.on('close', (code) => resolve({ code: code ?? -1, stdout, stderr }));
           });
         },
-        notify: (msg) => channel.sendNotification(msg),
+        notify: (msg, ctx) => channel.sendNotification(msg, ctx),
         notifyDesktop: desktopNotifyDep,
       }),
   });
@@ -151,7 +156,7 @@ export async function startDaemon(config: ConfigT): Promise<RunningDaemon> {
     pendingReplies.cancelAll();
     await new Promise<void>((resolve) => server.close(() => resolve()));
     try {
-      await channel.sendNotification('🔻 kuroboto offline');
+      await channel.sendNotification('🔻 kuroboto offline', topicContextSystem());
     } catch {
       // best-effort
     }
@@ -182,7 +187,7 @@ export async function startDaemon(config: ConfigT): Promise<RunningDaemon> {
   process.on('SIGINT', onSignal);
 
   try {
-    await channel.sendNotification('✅ kuroboto online');
+    await channel.sendNotification('✅ kuroboto online', topicContextSystem());
   } catch {
     // best-effort
   }
@@ -218,8 +223,29 @@ function isProcessAlive(pid: number): boolean {
   }
 }
 
-function makeChannel(config: ConfigT, logger: Logger): Channel {
+async function makeChannel(config: ConfigT, logger: Logger): Promise<Channel> {
   if (config.channel.type === 'telegram') {
+    if (config.channel.forumMode) {
+      const api = new TelegramApi(config.channel.token);
+      // Fail fast if the bot can't manage topics — saves chasing a 400 on
+      // the first sendMessage and gives the user actionable instructions.
+      await validateBotPermissions(api, config.channel.chatId);
+      const topicManager = new TopicManager({
+        api,
+        chatId: config.channel.chatId,
+        forumMode: true,
+        storagePath: TOPICS_FILE,
+        logger,
+        audit: forwardTopicAudit(logger),
+      });
+      await topicManager.loadFromDisk();
+      return new TelegramChannel({
+        token: config.channel.token,
+        chatId: config.channel.chatId,
+        logger,
+        topicManager,
+      });
+    }
     return new TelegramChannel({
       token: config.channel.token,
       chatId: config.channel.chatId,
@@ -227,5 +253,22 @@ function makeChannel(config: ConfigT, logger: Logger): Channel {
     });
   }
   throw new DaemonError(`unsupported channel type: ${(config.channel as { type: string }).type}`);
+}
+
+function forwardTopicAudit(logger: Logger): (e: TopicAuditEvent) => void {
+  return (e) => {
+    const decision: 'allow' | 'deny' | 'ask' =
+      e.source === 'topic-create-failed' ? 'deny' : e.source === 'topic-purged' ? 'ask' : 'allow';
+    appendAudit({
+      ts: new Date().toISOString(),
+      requestId: e.threadId !== undefined ? `topic:${e.threadId}` : `topic:${e.key}`,
+      tool: 'topic',
+      cwd: null,
+      decision,
+      reason: e.error ?? null,
+      source: e.source,
+      remember: false,
+    }).catch((err) => logger.warn('topic audit append failed', { err: (err as Error).message }));
+  };
 }
 

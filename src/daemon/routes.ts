@@ -18,12 +18,19 @@ import {
 import { isQAPrompt } from './notificationDetect.js';
 import { injectViaPty } from '../inject/pty.js';
 import type { SessionSnap } from './sleeping.js';
+import { topicContextFromHook } from './topicContext.js';
+import type { ChannelContext } from '../channels/Channel.js';
 
 export function registerRoutes(app: Express, ctx: DaemonContext): void {
   const fmtCtx = (): PromptFormatContext => ({
     hostname: ctx.hostname,
     sleeping: ctx.state.sleeping.snapshot(),
   });
+  const hookTopicCtx = (p: { cwd?: string; session_id: string }): ChannelContext =>
+    topicContextFromHook(p, {
+      injectClients: ctx.injectClients,
+      sleepingSnap: ctx.state.sleeping.snapshot(),
+    });
 
   app.get('/v1/health', (_req, res) => {
     res.json({
@@ -254,10 +261,11 @@ export function registerRoutes(app: Express, ctx: DaemonContext): void {
     if (payload.session_id && payload.cwd) {
       ctx.injectClients.bindSessionByCwd(payload.session_id, payload.cwd);
     }
+    const topicCtx = hookTopicCtx(payload);
     if (shouldHandleAsQA(payload, ctx)) {
       // Fire-and-forget: the Q&A flow runs end-to-end (send question, await
       // reply, inject, audit) in the background. The hook just gets ack.
-      handleQAPrompt(payload, ctx, fmtCtx()).catch((e) =>
+      handleQAPrompt(payload, ctx, fmtCtx(), topicCtx).catch((e) =>
         ctx.logger.warn('Q&A flow failed', { err: (e as Error).message }),
       );
       ctx.logger.info('notify received (Q&A)', { cwd: payload.cwd });
@@ -273,14 +281,17 @@ export function registerRoutes(app: Express, ctx: DaemonContext): void {
     });
     if (delayMs <= 0) {
       formatNotification(payload, fmtCtx())
-        .then((text) => ctx.channel.sendNotification(text))
+        .then((text) => ctx.channel.sendNotification(text, topicCtx))
         .then(() => ctx.logger.info('notify sent (immediate)'))
         .catch((e) => ctx.logger.warn('sendNotification failed', { err: (e as Error).message }));
     } else {
       ctx.pendingNotifications.arm(payload, delayMs, (p) => {
         ctx.logger.info('notify timer fired, sending');
+        // Re-derive context at fire time since sleep / inject-client state
+        // may have changed during the delay.
+        const lateCtx = hookTopicCtx(p);
         formatNotification(p, fmtCtx())
-          .then((text) => ctx.channel.sendNotification(text))
+          .then((text) => ctx.channel.sendNotification(text, lateCtx))
           .then(() => ctx.logger.info('notify sent (delayed)'))
           .catch((e) => ctx.logger.warn('sendNotification (delayed) failed', { err: (e as Error).message }));
       });
@@ -294,6 +305,7 @@ export function registerRoutes(app: Express, ctx: DaemonContext): void {
       ctx.injectClients.bindSessionByCwd(payload.session_id, payload.cwd);
     }
     const gamingSnap = ctx.state.gaming.snapshot();
+    const topicCtx = hookTopicCtx(payload);
     if (gamingSnap.active && !ctx.config.policy.gamingAlwaysAsk.includes(payload.tool_name)) {
       const decision: Decision = { decision: 'allow', reason: 'gaming' };
       appendAudit({
@@ -307,7 +319,7 @@ export function registerRoutes(app: Express, ctx: DaemonContext): void {
         remember: false,
       }).catch((e) => ctx.logger.warn('audit append failed', { err: (e as Error).message }));
       formatPermissionPrompt(payload, fmtCtx())
-        .then((text) => ctx.channel.sendNotification(`🎮 ${text}`))
+        .then((text) => ctx.channel.sendNotification(`🎮 ${text}`, topicCtx))
         .catch((e) => ctx.logger.warn('gaming notify failed', { err: (e as Error).message }));
       res.json(decision);
       return;
@@ -361,16 +373,19 @@ export function registerRoutes(app: Express, ctx: DaemonContext): void {
     const { requestId, promise } = ctx.pending.create(ctx.config.policy.permissionTimeoutMs);
     try {
       const text = await formatPermissionPrompt(payload, fmtCtx());
-      await ctx.channel.sendPrompt({
-        requestId,
-        text,
-        buttons: [
-          { label: '✅ Allow', action: 'allow' },
-          { label: '🔓 Allow & remember', action: 'allow_remember' },
-          { label: '❌ Deny', action: 'deny' },
-          { label: '💬 Deny with note', action: 'deny_note' },
-        ],
-      });
+      await ctx.channel.sendPrompt(
+        {
+          requestId,
+          text,
+          buttons: [
+            { label: '✅ Allow', action: 'allow' },
+            { label: '🔓 Allow & remember', action: 'allow_remember' },
+            { label: '❌ Deny', action: 'deny' },
+            { label: '💬 Deny with note', action: 'deny_note' },
+          ],
+        },
+        topicCtx,
+      );
     } catch (e) {
       ctx.logger.error('sendPrompt failed', { err: (e as Error).message });
       ctx.pending.resolve(requestId, { decision: 'ask', reason: 'channel unavailable' });
@@ -443,11 +458,12 @@ async function handleQAPrompt(
   payload: NotificationPayload,
   ctx: DaemonContext,
   fmtCtx: PromptFormatContext,
+  topicCtx: ChannelContext,
 ): Promise<void> {
   const text = await formatQAPrompt(payload, fmtCtx);
   let sentMessageId: string;
   try {
-    ({ sentMessageId } = await ctx.channel.sendQuestion({ text, forceReply: true }));
+    ({ sentMessageId } = await ctx.channel.sendQuestion({ text, forceReply: true }, topicCtx));
   } catch (e) {
     ctx.logger.warn('Q&A sendQuestion failed', { err: (e as Error).message });
     return;
@@ -481,7 +497,7 @@ async function handleQAPrompt(
         remember: false,
       }).catch((e2) => ctx.logger.warn('audit append failed', { err: (e2 as Error).message }));
       await ctx.channel
-        .sendNotification('⏱ Q&A expirou (Claude pode ainda estar esperando)')
+        .sendNotification('⏱ Q&A expirou (Claude pode ainda estar esperando)', topicCtx)
         .catch((e2) => ctx.logger.warn('sendNotification (qa-timeout) failed', { err: (e2 as Error).message }));
       return;
     }
@@ -502,7 +518,7 @@ async function handleQAPrompt(
       remember: false,
     }).catch((e) => ctx.logger.warn('audit append failed', { err: (e as Error).message }));
     await ctx.channel
-      .sendNotification('✅ Reply injetada')
+      .sendNotification('✅ Reply injetada', topicCtx)
       .catch((e) => ctx.logger.warn('sendNotification (qa-injected) failed', { err: (e as Error).message }));
     return;
   }
@@ -517,7 +533,7 @@ async function handleQAPrompt(
     remember: false,
   }).catch((e2) => ctx.logger.warn('audit append failed', { err: (e2 as Error).message }));
   await ctx.channel
-    .sendNotification(`❌ Inject falhou: ${result.reason}\n\nSua reply foi:\n${reply}`)
+    .sendNotification(`❌ Inject falhou: ${result.reason}\n\nSua reply foi:\n${reply}`, topicCtx)
     .catch((e2) => ctx.logger.warn('sendNotification (qa-inject-failed) failed', { err: (e2 as Error).message }));
 }
 

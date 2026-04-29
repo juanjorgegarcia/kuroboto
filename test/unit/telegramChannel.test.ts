@@ -1,15 +1,36 @@
-import { describe, it, expect, beforeEach, vi } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import fsp from 'node:fs/promises';
+import path from 'node:path';
+import os from 'node:os';
 import { TelegramChannel } from '../../src/channels/telegram/TelegramChannel.js';
+import { TopicManager } from '../../src/channels/telegram/topics.js';
 import type { Decision } from '../../src/core/types.js';
 import { noopLogger } from '../helpers/mockChannel.js';
 
 class FakeApi {
-  public messages: Array<{ chatId: number; text: string; keyboard?: unknown }> = [];
+  public messages: Array<{
+    chatId: number;
+    text: string;
+    opts?: { messageThreadId?: number; keyboard?: unknown; forceReply?: boolean };
+  }> = [];
   public callbacksAnswered: string[] = [];
   public editKeyboardCalls: Array<{ messageId: number; keyboard: unknown }> = [];
+  public createTopicCalls: Array<{ chatId: number; name: string }> = [];
   private nextMessageId = 100;
-  async sendMessage(chatId: number, text: string, keyboard?: unknown): Promise<number> {
-    this.messages.push({ chatId, text, keyboard });
+  private nextThreadId = 200;
+  /** Per-call programmable error: pop the next error before each sendMessage. */
+  public sendErrors: Error[] = [];
+
+  async sendMessage(
+    chatId: number,
+    text: string,
+    opts?: { messageThreadId?: number; keyboard?: unknown; forceReply?: boolean },
+  ): Promise<number> {
+    if (this.sendErrors.length > 0) {
+      const e = this.sendErrors.shift()!;
+      throw e;
+    }
+    this.messages.push({ chatId, text, opts });
     return this.nextMessageId++;
   }
   async answerCallbackQuery(id: string): Promise<void> {
@@ -17,6 +38,10 @@ class FakeApi {
   }
   async editMessageReplyMarkup(_chat: number, messageId: number, keyboard: unknown): Promise<void> {
     this.editKeyboardCalls.push({ messageId, keyboard });
+  }
+  async createForumTopic(chatId: number, name: string): Promise<number> {
+    this.createTopicCalls.push({ chatId, name });
+    return this.nextThreadId++;
   }
   async getUpdates(): Promise<never[]> { return []; }
 }
@@ -98,5 +123,93 @@ describe('TelegramChannel callbacks', () => {
     text('hello');
     expect(decisions).toEqual([]);
     expect(free).toEqual(['hello']);
+  });
+});
+
+describe('TelegramChannel topic routing', () => {
+  let api: FakeApi;
+  let dir: string;
+  let storagePath: string;
+
+  beforeEach(async () => {
+    api = new FakeApi();
+    dir = await fsp.mkdtemp(path.join(os.tmpdir(), 'kuroboto-tg-channel-'));
+    storagePath = path.join(dir, 'topics.json');
+  });
+
+  afterEach(async () => {
+    await fsp.rm(dir, { recursive: true, force: true });
+  });
+
+  function makeChannelWithTm(forumMode: boolean): TelegramChannel {
+    const tm = new TopicManager({
+      api,
+      chatId: -100123,
+      forumMode,
+      storagePath,
+      logger: noopLogger,
+    });
+    const ch = new TelegramChannel({
+      token: 't',
+      chatId: -100123,
+      logger: noopLogger,
+      topicManager: tm,
+    });
+    (ch as unknown as { api: unknown }).api = api;
+    return ch;
+  }
+
+  it('forumMode off: sendNotification omits message_thread_id', async () => {
+    const ch = makeChannelWithTm(false);
+    await ch.sendNotification('hi', { slug: 'fix-bot-ux' });
+    expect(api.messages).toHaveLength(1);
+    expect(api.messages[0].opts?.messageThreadId).toBeUndefined();
+    expect(api.createTopicCalls).toHaveLength(0);
+  });
+
+  it('forumMode on: first send creates topic, second send same key reuses it', async () => {
+    const ch = makeChannelWithTm(true);
+    await ch.sendNotification('first', { slug: 'fix-bot-ux' });
+    await ch.sendNotification('second', { slug: 'fix-bot-ux' });
+    expect(api.createTopicCalls).toEqual([{ chatId: -100123, name: 'fix-bot-ux' }]);
+    expect(api.messages).toHaveLength(2);
+    expect(api.messages[0].opts?.messageThreadId).toBe(200);
+    expect(api.messages[1].opts?.messageThreadId).toBe(200);
+  });
+
+  it('forumMode on: sleep slug → topic name uses 💤 prefix and stripped suffix', async () => {
+    const ch = makeChannelWithTm(true);
+    await ch.sendNotification('💤', { slug: 'fix-bot-ux-abc123', isSleep: true });
+    expect(api.createTopicCalls).toEqual([{ chatId: -100123, name: '💤 fix-bot-ux' }]);
+  });
+
+  it('forumMode on: missing context → kuroboto-system topic', async () => {
+    const ch = makeChannelWithTm(true);
+    await ch.sendNotification('hi');
+    expect(api.createTopicCalls).toEqual([{ chatId: -100123, name: 'kuroboto-system' }]);
+  });
+
+  it('forumMode on: thread-not-found → purge and recreate', async () => {
+    const ch = makeChannelWithTm(true);
+    // First send creates topic 200
+    await ch.sendNotification('warmup', { slug: 'fix-bot-ux' });
+    // Next send: api fails with thread-not-found, channel should purge and retry
+    api.sendErrors.push(new Error('telegram: Bad Request: message thread not found'));
+    await ch.sendNotification('after-delete', { slug: 'fix-bot-ux' });
+    expect(api.createTopicCalls).toHaveLength(2);
+    expect(api.createTopicCalls[0].name).toBe('fix-bot-ux');
+    expect(api.createTopicCalls[1].name).toBe('fix-bot-ux');
+    // Final message used the new thread id
+    expect(api.messages[api.messages.length - 1].opts?.messageThreadId).toBe(201);
+  });
+
+  it('forumMode on: createForumTopic failure → message goes to main chat (no thread id)', async () => {
+    api.createForumTopic = async () => {
+      throw new Error('rate limited');
+    };
+    const ch = makeChannelWithTm(true);
+    await ch.sendNotification('hi', { slug: 'fix-bot-ux' });
+    expect(api.messages).toHaveLength(1);
+    expect(api.messages[0].opts?.messageThreadId).toBeUndefined();
   });
 });
