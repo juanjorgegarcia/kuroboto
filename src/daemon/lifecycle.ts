@@ -59,8 +59,11 @@ export async function startDaemon(config: ConfigT): Promise<RunningDaemon> {
   // shell:false so --body markdown passes through verbatim. Node 16+ resolves
   // .exe (and .cmd) via PATHEXT on Windows when shell:false, so we don't need
   // to suffix manually.
+  // windowsHide: true suppresses the popup console window when the daemon
+  // (which itself may run detached) spawns child processes on Windows. Without
+  // this, every sleep agent + every gh/git call flickers a console.
   const claudeSpawn = (cmd: string, args: string[], opts?: SpawnOptions): ReturnType<typeof nodeSpawn> =>
-    nodeSpawn(cmd, args, { ...opts, shell: false });
+    nodeSpawn(cmd, args, { ...opts, shell: false, windowsHide: true });
   const desktopNotifyDep: ((opts: DesktopNotifyOpts) => Promise<void>) | undefined =
     config.notifications.desktop
       ? (opts) =>
@@ -81,7 +84,7 @@ export async function startDaemon(config: ConfigT): Promise<RunningDaemon> {
       finishSleep(session, {
         exec: async (cmd, args, opts) => {
           return new Promise((resolve) => {
-            const child = nodeSpawn(cmd, args, { cwd: opts?.cwd, shell: false });
+            const child = nodeSpawn(cmd, args, { cwd: opts?.cwd, shell: false, windowsHide: true });
             let stdout = '';
             let stderr = '';
             child.stdout?.on('data', (b) => (stdout += b.toString()));
