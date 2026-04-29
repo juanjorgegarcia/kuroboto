@@ -74,7 +74,7 @@ The daemon:
 - Notifies via Telegram on start, on each commit, on completion
 - Hard-times-out after `sleepMaxDurationMs` (default 2h)
 
-You'll get a Telegram notif when the PR opens. The PR also gets auto-reviewed by the `/code-review` skill (per the project's PR workflow rule).
+You'll get a Telegram notif when the PR opens. **Always run `/code-review` skill on the new PR** before reviewing yourself — this is mandatory until we wire it as a CI/PR-bot trigger. The 5-agent review catches real bugs that single-pass eyes miss (witnessed on PRs #11, #12, #13).
 
 ### 6. Review and merge
 
