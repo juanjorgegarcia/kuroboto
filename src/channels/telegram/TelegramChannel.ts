@@ -6,19 +6,32 @@ import type {
   Decision,
 } from '../../core/types.js';
 import type { Logger } from '../../core/logger.js';
-import type { Channel, ChannelEventName, ChannelEventHandlers } from '../Channel.js';
-import { TelegramApi, type TelegramUpdate, type InlineKeyboardButton } from './api.js';
+import type {
+  Channel,
+  ChannelContext,
+  ChannelEventName,
+  ChannelEventHandlers,
+} from '../Channel.js';
+import {
+  TelegramApi,
+  isThreadNotFoundError,
+  type TelegramUpdate,
+  type InlineKeyboardButton,
+} from './api.js';
 import { Poller } from './poller.js';
+import { TopicManager, pickTopicKey } from './topics.js';
 
 export interface TelegramChannelOptions {
   token: string;
   chatId: number;
   logger: Logger;
+  topicManager?: TopicManager;
 }
 
 export class TelegramChannel implements Channel {
   private readonly api: TelegramApi;
   private readonly poller: Poller;
+  private readonly topicManager?: TopicManager;
   private readonly handlers = {
     decision: [] as Array<(event: DecisionEvent) => void>,
     freeText: [] as Array<(event: FreeTextEvent) => void>,
@@ -28,6 +41,7 @@ export class TelegramChannel implements Channel {
 
   constructor(private readonly opts: TelegramChannelOptions) {
     this.api = new TelegramApi(opts.token);
+    this.topicManager = opts.topicManager;
     this.poller = new Poller({
       api: this.api,
       chatId: opts.chatId,
@@ -46,25 +60,57 @@ export class TelegramChannel implements Channel {
     this.opts.logger.info('telegram channel stopped');
   }
 
-  async sendNotification(text: string): Promise<void> {
-    await this.api.sendMessage(this.opts.chatId, text);
+  async sendNotification(text: string, ctx?: ChannelContext): Promise<void> {
+    await this.sendInTopic(ctx, (threadId) =>
+      this.api.sendMessage(this.opts.chatId, text, { messageThreadId: threadId }),
+    );
   }
 
-  async sendPrompt(req: PromptRequest): Promise<void> {
+  async sendPrompt(req: PromptRequest, ctx?: ChannelContext): Promise<void> {
     const keyboard = buildKeyboard(req);
-    const messageId = await this.api.sendMessage(this.opts.chatId, req.text, { keyboard });
+    const messageId = await this.sendInTopic(ctx, (threadId) =>
+      this.api.sendMessage(this.opts.chatId, req.text, { keyboard, messageThreadId: threadId }),
+    );
     this.promptMessageIds.set(req.requestId, { messageId, chatId: this.opts.chatId });
   }
 
-  async sendQuestion(req: QuestionRequest): Promise<{ sentMessageId: string }> {
-    const messageId = await this.api.sendMessage(this.opts.chatId, req.text, {
-      forceReply: req.forceReply ?? true,
-    });
+  async sendQuestion(req: QuestionRequest, ctx?: ChannelContext): Promise<{ sentMessageId: string }> {
+    const messageId = await this.sendInTopic(ctx, (threadId) =>
+      this.api.sendMessage(this.opts.chatId, req.text, {
+        forceReply: req.forceReply ?? true,
+        messageThreadId: threadId,
+      }),
+    );
     return { sentMessageId: String(messageId) };
   }
 
   on<K extends ChannelEventName>(event: K, handler: ChannelEventHandlers[K]): void {
     this.handlers[event].push(handler as never);
+  }
+
+  /**
+   * Resolve the routing context to a thread id, run `send`, and on a
+   * "message thread not found" 400 — meaning the topic was deleted in
+   * the client — purge the cached entry and retry once with a fresh
+   * topic. When forumMode is off (no topicManager), `send` is invoked
+   * directly with `undefined` so the message lands in the main chat.
+   */
+  private async sendInTopic(
+    ctx: ChannelContext | undefined,
+    send: (threadId: number | undefined) => Promise<number>,
+  ): Promise<number> {
+    if (!this.topicManager) return send(undefined);
+    const { key, name } = pickTopicKey(ctx);
+    const threadId = await this.topicManager.resolve(key, name);
+    try {
+      return await send(threadId);
+    } catch (e) {
+      if (!isThreadNotFoundError(e)) throw e;
+      this.opts.logger.warn('topic missing, purging and recreating', { key });
+      await this.topicManager.purge(key);
+      const newId = await this.topicManager.resolve(key, name);
+      return send(newId);
+    }
   }
 
   private handleUpdate(update: TelegramUpdate): void {

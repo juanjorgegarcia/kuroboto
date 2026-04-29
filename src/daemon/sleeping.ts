@@ -2,13 +2,14 @@ import type { ChildProcess, SpawnOptions } from 'node:child_process';
 import { GamingState, type GamingSnapshot } from './gaming.js';
 import { slugify } from './worktree.js';
 import type { DesktopNotifyOpts } from '../notify/desktop.js';
+import type { ChannelContext } from '../channels/Channel.js';
 
 export type SpawnFn = (cmd: string, args: string[], opts: SpawnOptions) => ChildProcess;
 
 export interface SleepingDeps {
   spawn: SpawnFn;
   gaming: GamingState;
-  notify: (msg: string) => Promise<void>;
+  notify: (msg: string, ctx?: ChannelContext) => Promise<void>;
   audit: (entry: Record<string, unknown>) => Promise<void>;
   createWorktree: (repo: string, branch: string, dir: string) => Promise<void>;
   removeWorktree: (repo: string, dir: string) => Promise<void>;
@@ -158,6 +159,7 @@ export class SleepingOrchestrator {
 
     void this.deps.notify(
       `\u{1F4A4} sleep started — ${slug}, max ${formatDuration(req.maxDurationMs)}`,
+      { slug, isSleep: true },
     );
     void this.deps.audit({
       ts: new Date(startedAt).toISOString(),
@@ -226,6 +228,7 @@ export class SleepingOrchestrator {
     });
     void this.deps.notify(
       `\u{1F6D1} sleep cancelled — ${slug}. log: ${session.worktreePath}/.kuroboto-sleep.log`,
+      { slug, isSleep: true },
     );
     this.sessions.delete(slug);
     this.maybeRestoreGaming();
@@ -256,6 +259,7 @@ export class SleepingOrchestrator {
         } catch (e) {
           void this.deps.notify(
             `⚠️ sleep onSuccess hook failed for ${slug}: ${(e as Error).message}`,
+            { slug, isSleep: true },
           );
         } finally {
           this.sessions.delete(slug);
@@ -266,6 +270,7 @@ export class SleepingOrchestrator {
       const reason = signal ? `signal ${signal}` : `exit ${code}`;
       void this.deps.notify(
         `❌ sleep failed — ${slug} — ${reason}. log: ${session.worktreePath}/.kuroboto-sleep.log`,
+        { slug, isSleep: true },
       );
       if (this.deps.notifyDesktop) {
         void this.deps.notifyDesktop({
@@ -286,6 +291,7 @@ export class SleepingOrchestrator {
     session.child.kill('SIGTERM');
     void this.deps.notify(
       `⏰ sleep timed out — ${slug}. log: ${session.worktreePath}/.kuroboto-sleep.log. PR not created.`,
+      { slug, isSleep: true },
     );
     if (this.deps.notifyDesktop) {
       void this.deps.notifyDesktop({

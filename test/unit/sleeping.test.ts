@@ -6,6 +6,7 @@ import {
   type SpawnFn,
 } from '../../src/daemon/sleeping.js';
 import { GamingState } from '../../src/daemon/gaming.js';
+import type { ChannelContext } from '../../src/channels/Channel.js';
 
 class FakeChild extends EventEmitter {
   killed = false;
@@ -23,6 +24,7 @@ interface DepsState {
   /** All spawned children, in spawn order. Index by start order for multi-session tests. */
   children: FakeChild[];
   notifications: string[];
+  notificationCtxs: (ChannelContext | undefined)[];
   audits: unknown[];
   worktreesCreated: { repo: string; branch: string; dir: string }[];
   worktreeRemoved: string[];
@@ -32,6 +34,7 @@ function makeDeps(opts: { maxConcurrent?: number } = {}): { deps: SleepingDeps; 
   const state: DepsState = {
     children: [],
     notifications: [],
+    notificationCtxs: [],
     audits: [],
     worktreesCreated: [],
     worktreeRemoved: [],
@@ -45,8 +48,9 @@ function makeDeps(opts: { maxConcurrent?: number } = {}): { deps: SleepingDeps; 
   const deps: SleepingDeps = {
     spawn: spawnFn,
     gaming: new GamingState(),
-    notify: async (msg) => {
+    notify: async (msg, ctx) => {
       state.notifications.push(msg);
+      state.notificationCtxs.push(ctx);
     },
     audit: async (e) => {
       state.audits.push(e);
@@ -334,5 +338,55 @@ describe('SleepingOrchestrator', () => {
     const remaining = (snap.until ?? 0) - Date.now();
     expect(remaining).toBeGreaterThan(700);
     expect(remaining).toBeLessThan(900);
+  });
+
+  it('forwards isSleep ctx to notify on start, cancel, timeout, and failure', async () => {
+    const { deps, state } = makeDeps();
+    const orch = new SleepingOrchestrator(deps);
+    const session = await orch.start({
+      repo: '/x',
+      prompt: 'p',
+      workRoot: '/y',
+      maxDurationMs: 60_000,
+    });
+    expect(state.notifications[0]).toContain('sleep started');
+    expect(state.notificationCtxs[0]).toEqual({ slug: session.slug, isSleep: true });
+
+    // Cancel
+    const cancelP = orch.cancel({ slug: session.slug });
+    await vi.advanceTimersByTimeAsync(0);
+    await cancelP;
+    expect(state.notifications.some((n) => n.includes('cancelled'))).toBe(true);
+    const cancelIdx = state.notifications.findIndex((n) => n.includes('cancelled'));
+    expect(state.notificationCtxs[cancelIdx]).toEqual({ slug: session.slug, isSleep: true });
+
+    // Failure (non-zero exit)
+    const session2 = await orch.start({
+      repo: '/x',
+      prompt: 'p2',
+      workRoot: '/y',
+      maxDurationMs: 60_000,
+    });
+    state.child!.emit('exit', 1, null);
+    for (let i = 0; i < 10; i++) await Promise.resolve();
+    const failIdx = state.notifications.findIndex((n) => n.includes('failed'));
+    expect(failIdx).toBeGreaterThanOrEqual(0);
+    expect(state.notificationCtxs[failIdx]).toEqual({ slug: session2.slug, isSleep: true });
+  });
+
+  it('forwards isSleep ctx to notify on max-duration timeout', async () => {
+    const { deps, state } = makeDeps();
+    const orch = new SleepingOrchestrator(deps);
+    const session = await orch.start({
+      repo: '/x',
+      prompt: 'p',
+      workRoot: '/y',
+      maxDurationMs: 100,
+    });
+    vi.advanceTimersByTime(150);
+    for (let i = 0; i < 10; i++) await Promise.resolve();
+    const tmIdx = state.notifications.findIndex((n) => n.includes('timed out'));
+    expect(tmIdx).toBeGreaterThanOrEqual(0);
+    expect(state.notificationCtxs[tmIdx]).toEqual({ slug: session.slug, isSleep: true });
   });
 });
