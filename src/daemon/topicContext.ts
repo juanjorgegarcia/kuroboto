@@ -12,7 +12,10 @@ export interface TopicContextDeps {
  * Derive the routing context for an inbound hook payload. Priority:
  *   1. cwd matches an active sleep worktree → that sleep slug (with 💤)
  *   2. session is bound to a registered CLI client → that slug
- *   3. cwd matches a registered CLI client → that slug (late-bind path)
+ *   3. cwd matches a registered CLI client → that slug (defense-in-depth
+ *      safety net for the rare case where `bindSessionByCwd` hasn't fired
+ *      yet — in normal flow routes.ts calls it before us, so step 2 hits
+ *      first)
  *   4. otherwise → bare session_id (direct `claude`, no kuroboto wrapper)
  * Falls through to the kuroboto-system topic if nothing identifies the
  * source (handled inside the channel via `pickTopicKey`).

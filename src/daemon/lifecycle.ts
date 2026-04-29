@@ -257,8 +257,11 @@ async function makeChannel(config: ConfigT, logger: Logger): Promise<Channel> {
 
 function forwardTopicAudit(logger: Logger): (e: TopicAuditEvent) => void {
   return (e) => {
-    const decision: 'allow' | 'deny' | 'ask' =
-      e.source === 'topic-create-failed' ? 'deny' : e.source === 'topic-purged' ? 'ask' : 'allow';
+    // Topic lifecycle is not a permission decision; we audit the event but
+    // map decisions semantically: success (created/purged) = allow, failure
+    // = deny. 'ask' would imply pending/timeout and doesn't fit any topic
+    // event shape.
+    const decision: 'allow' | 'deny' = e.source === 'topic-create-failed' ? 'deny' : 'allow';
     appendAudit({
       ts: new Date().toISOString(),
       requestId: e.threadId !== undefined ? `topic:${e.threadId}` : `topic:${e.key}`,
