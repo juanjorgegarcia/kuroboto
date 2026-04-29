@@ -46,15 +46,16 @@ describe('listMergedSleeps', () => {
     });
   });
 
-  it('passes --state merged + --head sleep/ to gh', async () => {
+  it('passes --state merged to gh and does not pass --head', async () => {
     const { exec, calls } = makeExec({ 'gh pr': { code: 0, stdout: '[]', stderr: '' } });
     await listMergedSleeps({ exec, workRoot: '/wk' });
     expect(calls).toHaveLength(1);
     expect(calls[0].cmd).toBe('gh');
     expect(calls[0].args).toContain('--state');
     expect(calls[0].args).toContain('merged');
-    expect(calls[0].args).toContain('--head');
-    expect(calls[0].args).toContain('sleep/');
+    // Regression guard: gh's --head is exact-match, so passing 'sleep/' would
+    // always return []. The startsWith('sleep/') filter handles prefix matching.
+    expect(calls[0].args).not.toContain('--head');
   });
 
   it('throws a clear error when gh fails', async () => {
