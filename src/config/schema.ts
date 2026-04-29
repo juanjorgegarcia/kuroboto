@@ -32,6 +32,7 @@ export const PolicyConfig = z.object({
   gamingAlwaysAsk: z.array(z.string()).default([]),
   sleepMaxDurationMs: z.number().int().min(60_000).default(2 * 60 * 60 * 1000),
   sleepWorktreeDir: z.string().default('~/.kuroboto/worktrees'),
+  maxConcurrentSleeps: z.number().int().min(1).default(3),
   failOpen: z.boolean(),
 });
 

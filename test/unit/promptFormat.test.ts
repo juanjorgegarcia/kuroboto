@@ -22,7 +22,7 @@ async function writeTranscript(name: string, lines: unknown[]): Promise<string> 
   return file;
 }
 
-const idleSleep: SleepingSnapshot = { active: false };
+const idleSleep: SleepingSnapshot = { active: [], capacity: 3 };
 
 function permissionPayload(over: Partial<PreToolUsePayload> = {}): PreToolUsePayload {
   return {
@@ -119,12 +119,16 @@ describe('formatPermissionPrompt — sleep mode', () => {
       { role: 'assistant', content: 'Will start with step 1' },
     ]);
     const sleeping: SleepingSnapshot = {
-      active: true,
-      slug: 'fix-the-bot-ux-abc123',
-      branch: 'sleep/fix-the-bot-ux-abc123',
-      worktreePath: '/work/fix-the-bot-ux-abc123',
-      startedAt: 1,
-      expectedEndAt: 2,
+      active: [
+        {
+          slug: 'fix-the-bot-ux-abc123',
+          branch: 'sleep/fix-the-bot-ux-abc123',
+          worktreePath: '/work/fix-the-bot-ux-abc123',
+          startedAt: 1,
+          expectedEndAt: 2,
+        },
+      ],
+      capacity: 3,
     };
     const out = await formatPermissionPrompt(
       permissionPayload({
@@ -143,12 +147,16 @@ describe('formatPermissionPrompt — sleep mode', () => {
 
   it('cwd does NOT match worktreePath while sleeping → treated as interactive', async () => {
     const sleeping: SleepingSnapshot = {
-      active: true,
-      slug: 'foo-abc123',
-      branch: 'sleep/foo-abc123',
-      worktreePath: '/work/foo-abc123',
-      startedAt: 1,
-      expectedEndAt: 2,
+      active: [
+        {
+          slug: 'foo-abc123',
+          branch: 'sleep/foo-abc123',
+          worktreePath: '/work/foo-abc123',
+          startedAt: 1,
+          expectedEndAt: 2,
+        },
+      ],
+      capacity: 3,
     };
     const out = await formatPermissionPrompt(
       permissionPayload({ cwd: '/x/elsewhere', tool_input: { command: 'ls' } }),

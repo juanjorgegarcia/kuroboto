@@ -17,6 +17,7 @@ import {
 } from './promptFormat.js';
 import { isQAPrompt } from './notificationDetect.js';
 import { injectViaPty } from '../inject/pty.js';
+import type { SessionSnap } from './sleeping.js';
 
 export function registerRoutes(app: Express, ctx: DaemonContext): void {
   const fmtCtx = (): PromptFormatContext => ({
@@ -112,7 +113,16 @@ export function registerRoutes(app: Express, ctx: DaemonContext): void {
         expectedEndAt: session.expectedEndAt,
       });
     } catch (e) {
-      const msg = (e as Error).message;
+      const err = e as Error & { capacity?: number; active?: SessionSnap[] };
+      if (err.name === 'CapacityReachedError') {
+        res.status(429).json({
+          error: 'capacity reached',
+          capacity: err.capacity,
+          active: err.active,
+        });
+        return;
+      }
+      const msg = err.message;
       if (msg.includes('already')) {
         res.status(409).json({ error: msg });
       } else {
@@ -121,9 +131,33 @@ export function registerRoutes(app: Express, ctx: DaemonContext): void {
     }
   });
 
+  app.post('/v1/sleeping/cancel', async (req: Request, res: Response) => {
+    const body = (req.body ?? {}) as { slug?: unknown; all?: unknown };
+    const opts: { slug?: string; all?: boolean } = {};
+    if (typeof body.slug === 'string' && body.slug) opts.slug = body.slug;
+    if (body.all === true) opts.all = true;
+    try {
+      const result = await ctx.state.sleeping.cancel(opts);
+      res.json({ ok: true, cancelled: result.cancelled });
+    } catch (e) {
+      res.status(400).json({ error: (e as Error).message });
+    }
+  });
+
   app.delete('/v1/sleeping', async (_req, res) => {
-    const cancelled = await ctx.state.sleeping.cancel();
-    res.json({ ok: true, cancelled, reason: cancelled ? 'cancelled' : 'idle' });
+    // Legacy: equivalent to POST /v1/sleeping/cancel with no args (cancel the
+    // single active session, throws if multiple active).
+    try {
+      const result = await ctx.state.sleeping.cancel();
+      res.json({
+        ok: true,
+        cancelled: result.cancelled.length > 0,
+        slugs: result.cancelled,
+        reason: result.cancelled.length > 0 ? 'cancelled' : 'idle',
+      });
+    } catch (e) {
+      res.status(409).json({ error: (e as Error).message });
+    }
   });
 
   app.put('/v1/mode', (req: Request, res: Response) => {
@@ -393,8 +427,11 @@ function shouldHandleAsQA(payload: NotificationPayload, ctx: DaemonContext): boo
   // Sleep mode is autonomous: if Claude pauses inside a sleep worktree, it's
   // a stuck session — fall through to the regular notif path so the user can
   // investigate, rather than waiting indefinitely for a Q&A reply.
-  const snap = ctx.state.sleeping.snapshot();
-  if (snap.active && payload.cwd && samePath(payload.cwd, snap.worktreePath)) return false;
+  if (payload.cwd) {
+    const snap = ctx.state.sleeping.snapshot();
+    const inSleep = snap.active.some((s) => samePath(payload.cwd!, s.worktreePath));
+    if (inSleep) return false;
+  }
   return true;
 }
 

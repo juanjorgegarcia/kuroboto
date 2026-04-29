@@ -1,6 +1,10 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { EventEmitter } from 'node:events';
-import { SleepingOrchestrator, type SleepingDeps, type SpawnFn } from '../../src/daemon/sleeping.js';
+import {
+  SleepingOrchestrator,
+  type SleepingDeps,
+  type SpawnFn,
+} from '../../src/daemon/sleeping.js';
 import { GamingState } from '../../src/daemon/gaming.js';
 
 class FakeChild extends EventEmitter {
@@ -14,31 +18,47 @@ class FakeChild extends EventEmitter {
 }
 
 interface DepsState {
+  /** Last spawned child (legacy single-session shorthand for tests that only start one). */
   child?: FakeChild;
+  /** All spawned children, in spawn order. Index by start order for multi-session tests. */
+  children: FakeChild[];
   notifications: string[];
   audits: unknown[];
-  worktreeCreated?: { repo: string; branch: string; dir: string };
+  worktreesCreated: { repo: string; branch: string; dir: string }[];
   worktreeRemoved: string[];
 }
 
-function makeDeps(): { deps: SleepingDeps; state: DepsState } {
-  const state: DepsState = { notifications: [], audits: [], worktreeRemoved: [] };
+function makeDeps(opts: { maxConcurrent?: number } = {}): { deps: SleepingDeps; state: DepsState } {
+  const state: DepsState = {
+    children: [],
+    notifications: [],
+    audits: [],
+    worktreesCreated: [],
+    worktreeRemoved: [],
+  };
   const spawnFn: SpawnFn = (_cmd, _args, _opts) => {
-    state.child = new FakeChild();
-    return state.child as unknown as ReturnType<SpawnFn>;
+    const child = new FakeChild();
+    state.children.push(child);
+    state.child = child;
+    return child as unknown as ReturnType<SpawnFn>;
   };
   const deps: SleepingDeps = {
     spawn: spawnFn,
     gaming: new GamingState(),
-    notify: async (msg) => { state.notifications.push(msg); },
-    audit: async (e) => { state.audits.push(e); },
+    notify: async (msg) => {
+      state.notifications.push(msg);
+    },
+    audit: async (e) => {
+      state.audits.push(e);
+    },
     createWorktree: async (repo, branch, dir) => {
-      state.worktreeCreated = { repo, branch, dir };
+      state.worktreesCreated.push({ repo, branch, dir });
     },
     removeWorktree: async (_repo, dir) => {
       state.worktreeRemoved.push(dir);
     },
     onSuccess: vi.fn(async (_session) => {}),
+    maxConcurrent: opts.maxConcurrent ?? 3,
   };
   return { deps, state };
 }
@@ -51,10 +71,10 @@ describe('SleepingOrchestrator', () => {
     vi.useRealTimers();
   });
 
-  it('initial: idle snapshot', () => {
-    const { deps } = makeDeps();
+  it('initial: idle snapshot with capacity', () => {
+    const { deps } = makeDeps({ maxConcurrent: 3 });
     const orch = new SleepingOrchestrator(deps);
-    expect(orch.snapshot()).toEqual({ active: false });
+    expect(orch.snapshot()).toEqual({ active: [], capacity: 3 });
   });
 
   it('start creates worktree, arms gaming, spawns child, returns session', async () => {
@@ -68,7 +88,8 @@ describe('SleepingOrchestrator', () => {
     });
     expect(session.slug).toMatch(/^implement-billing-flow-[a-z0-9]{6}$/);
     expect(session.branch).toMatch(/^sleep\/implement-billing-flow-[a-z0-9]{6}$/);
-    expect(state.worktreeCreated).toEqual({
+    expect(state.worktreesCreated).toHaveLength(1);
+    expect(state.worktreesCreated[0]).toEqual({
       repo: '/x/repo',
       branch: session.branch,
       dir: `/y/wt/${session.slug}`,
@@ -76,17 +97,43 @@ describe('SleepingOrchestrator', () => {
     expect(deps.gaming.snapshot().active).toBe(true);
     expect(state.child).toBeDefined();
     const snap = orch.snapshot();
-    expect(snap.active).toBe(true);
-    if (snap.active) expect(snap.slug).toMatch(/^implement-billing-flow-[a-z0-9]{6}$/);
+    expect(snap.active).toHaveLength(1);
+    expect(snap.active[0].slug).toMatch(/^implement-billing-flow-[a-z0-9]{6}$/);
   });
 
-  it('rejects start when one is already active', async () => {
-    const { deps } = makeDeps();
+  it('two concurrent starts both succeed when under capacity', async () => {
+    const { deps, state } = makeDeps({ maxConcurrent: 3 });
+    const orch = new SleepingOrchestrator(deps);
+    await orch.start({ repo: '/x', prompt: 'a', workRoot: '/y', maxDurationMs: 60_000 });
+    await orch.start({ repo: '/x', prompt: 'b', workRoot: '/y', maxDurationMs: 60_000 });
+    expect(orch.snapshot().active).toHaveLength(2);
+    expect(state.children).toHaveLength(2);
+    expect(state.worktreesCreated).toHaveLength(2);
+  });
+
+  it('rejects start when at capacity', async () => {
+    const { deps } = makeDeps({ maxConcurrent: 1 });
     const orch = new SleepingOrchestrator(deps);
     await orch.start({ repo: '/x', prompt: 'a', workRoot: '/y', maxDurationMs: 60_000 });
     await expect(
       orch.start({ repo: '/x', prompt: 'b', workRoot: '/y', maxDurationMs: 60_000 }),
-    ).rejects.toThrow(/already/);
+    ).rejects.toThrow(/capacity/i);
+  });
+
+  it('CapacityReachedError carries capacity + active list', async () => {
+    const { deps } = makeDeps({ maxConcurrent: 2 });
+    const orch = new SleepingOrchestrator(deps);
+    await orch.start({ repo: '/x', prompt: 'a', workRoot: '/y', maxDurationMs: 60_000 });
+    await orch.start({ repo: '/x', prompt: 'b', workRoot: '/y', maxDurationMs: 60_000 });
+    try {
+      await orch.start({ repo: '/x', prompt: 'c', workRoot: '/y', maxDurationMs: 60_000 });
+      throw new Error('expected throw');
+    } catch (e) {
+      const err = e as Error & { capacity?: number; active?: unknown[] };
+      expect(err.name).toBe('CapacityReachedError');
+      expect(err.capacity).toBe(2);
+      expect(err.active).toHaveLength(2);
+    }
   });
 
   it('child exit 0 → onSuccess called, gaming restored, state idle', async () => {
@@ -97,11 +144,10 @@ describe('SleepingOrchestrator', () => {
     await orch.start({ repo: '/x', prompt: 'p', workRoot: '/y', maxDurationMs: 60_000 });
     expect(gaming.snapshot().active).toBe(true);
     state.child!.emit('exit', 0, null);
-    // onSuccess is awaited inside the IIFE — flush microtasks until orchestrator goes idle.
     for (let i = 0; i < 10; i++) await Promise.resolve();
     expect(deps.onSuccess).toHaveBeenCalledTimes(1);
     expect(gaming.snapshot().active).toBe(false);
-    expect(orch.snapshot().active).toBe(false);
+    expect(orch.snapshot().active).toEqual([]);
   });
 
   it('child exit non-zero → failure notification, gaming restored, state idle', async () => {
@@ -114,7 +160,7 @@ describe('SleepingOrchestrator', () => {
     expect(state.notifications.some((n) => n.includes('failed'))).toBe(true);
     expect(deps.onSuccess).not.toHaveBeenCalled();
     expect(deps.gaming.snapshot().active).toBe(false);
-    expect(orch.snapshot().active).toBe(false);
+    expect(orch.snapshot().active).toEqual([]);
   });
 
   it('max duration timer kills child, sends timeout notification', async () => {
@@ -127,7 +173,7 @@ describe('SleepingOrchestrator', () => {
     await Promise.resolve();
     expect(state.child!.killed).toBe(true);
     expect(state.notifications.some((n) => n.includes('timed out') || n.includes('timeout'))).toBe(true);
-    expect(orch.snapshot().active).toBe(false);
+    expect(orch.snapshot().active).toEqual([]);
   });
 
   it('handleChildExit non-zero → notifyDesktop fires with error level + slug', async () => {
@@ -166,7 +212,6 @@ describe('SleepingOrchestrator', () => {
 
   it('notifyDesktop omitted → child exit failure still notifies via Telegram', async () => {
     const { deps, state } = makeDeps();
-    // No notifyDesktop wired
     const orch = new SleepingOrchestrator(deps);
     await orch.start({ repo: '/x', prompt: 'p', workRoot: '/y', maxDurationMs: 60_000 });
     state.child!.emit('exit', 1, null);
@@ -175,28 +220,87 @@ describe('SleepingOrchestrator', () => {
     expect(state.notifications.some((n) => n.includes('failed'))).toBe(true);
   });
 
-  it('cancel() kills child, sends cancelled notification, state idle', async () => {
+  it('cancel() with single active session kills child, returns slug', async () => {
     const { deps, state } = makeDeps();
     const orch = new SleepingOrchestrator(deps);
-    await orch.start({ repo: '/x', prompt: 'p', workRoot: '/y', maxDurationMs: 60_000 });
+    const session = await orch.start({ repo: '/x', prompt: 'p', workRoot: '/y', maxDurationMs: 60_000 });
     const cancelPromise = orch.cancel();
-    // FakeChild.kill() uses setImmediate() to emit exit; advance timers to trigger it
     vi.advanceTimersByTime(0);
-    await cancelPromise;
+    const r = await cancelPromise;
+    expect(r.cancelled).toEqual([session.slug]);
     expect(state.child!.killed).toBe(true);
     expect(state.notifications.some((n) => n.toLowerCase().includes('cancel'))).toBe(true);
-    expect(orch.snapshot().active).toBe(false);
+    expect(orch.snapshot().active).toEqual([]);
   });
 
-  it('cancel() is no-op when idle', async () => {
+  it('cancel() is no-op when idle (returns empty cancelled list)', async () => {
     const { deps } = makeDeps();
     const orch = new SleepingOrchestrator(deps);
     const r = await orch.cancel();
-    expect(r).toBe(false);
+    expect(r).toEqual({ cancelled: [] });
+  });
+
+  it('cancel() throws when multiple active and no slug given', async () => {
+    const { deps } = makeDeps({ maxConcurrent: 3 });
+    const orch = new SleepingOrchestrator(deps);
+    await orch.start({ repo: '/x', prompt: 'a', workRoot: '/y', maxDurationMs: 60_000 });
+    await orch.start({ repo: '/x', prompt: 'b', workRoot: '/y', maxDurationMs: 60_000 });
+    await expect(orch.cancel()).rejects.toThrow(/multiple/i);
+  });
+
+  it('cancel({ slug }) cancels only the matching session', async () => {
+    const { deps } = makeDeps({ maxConcurrent: 3 });
+    const orch = new SleepingOrchestrator(deps);
+    const a = await orch.start({ repo: '/x', prompt: 'a', workRoot: '/y', maxDurationMs: 60_000 });
+    const b = await orch.start({ repo: '/x', prompt: 'b', workRoot: '/y', maxDurationMs: 60_000 });
+    const cancelP = orch.cancel({ slug: a.slug });
+    vi.advanceTimersByTime(0);
+    const r = await cancelP;
+    expect(r.cancelled).toEqual([a.slug]);
+    const snap = orch.snapshot();
+    expect(snap.active).toHaveLength(1);
+    expect(snap.active[0].slug).toBe(b.slug);
+  });
+
+  it('cancel({ all: true }) cancels every active session', async () => {
+    const { deps } = makeDeps({ maxConcurrent: 3 });
+    const orch = new SleepingOrchestrator(deps);
+    const a = await orch.start({ repo: '/x', prompt: 'a', workRoot: '/y', maxDurationMs: 60_000 });
+    const b = await orch.start({ repo: '/x', prompt: 'b', workRoot: '/y', maxDurationMs: 60_000 });
+    const cancelP = orch.cancel({ all: true });
+    vi.advanceTimersByTime(0);
+    const r = await cancelP;
+    expect(r.cancelled.sort()).toEqual([a.slug, b.slug].sort());
+    expect(orch.snapshot().active).toEqual([]);
+  });
+
+  it('cancel({ slug }) on unknown slug returns empty', async () => {
+    const { deps } = makeDeps();
+    const orch = new SleepingOrchestrator(deps);
+    await orch.start({ repo: '/x', prompt: 'p', workRoot: '/y', maxDurationMs: 60_000 });
+    const r = await orch.cancel({ slug: 'does-not-exist' });
+    expect(r.cancelled).toEqual([]);
+    // The active session is not affected
+    expect(orch.snapshot().active).toHaveLength(1);
+  });
+
+  it('one session finishing does not affect another concurrent session', async () => {
+    const { deps, state } = makeDeps({ maxConcurrent: 3 });
+    const orch = new SleepingOrchestrator(deps);
+    const a = await orch.start({ repo: '/x', prompt: 'a', workRoot: '/y', maxDurationMs: 60_000 });
+    await orch.start({ repo: '/x', prompt: 'b', workRoot: '/y', maxDurationMs: 60_000 });
+    // Exit child A; B should still be alive
+    state.children[0].emit('exit', 0, null);
+    for (let i = 0; i < 10; i++) await Promise.resolve();
+    const snap = orch.snapshot();
+    expect(snap.active).toHaveLength(1);
+    expect(snap.active[0].slug).not.toBe(a.slug);
+    // gaming is still on because session B is still active
+    expect(deps.gaming.snapshot().active).toBe(true);
   });
 
   it('plan content (instead of prompt) generates an execute-plan prompt', async () => {
-    const { deps, state } = makeDeps();
+    const { deps } = makeDeps();
     const orch = new SleepingOrchestrator(deps);
     const planSpy = vi.spyOn(deps, 'spawn');
     await orch.start({ repo: '/x', plan: '# Plan\n\nDo X', workRoot: '/y', maxDurationMs: 60_000 });
@@ -218,18 +322,15 @@ describe('SleepingOrchestrator', () => {
 
   it('gaming with prior timer restored to remaining duration after success', async () => {
     const { deps, state } = makeDeps();
-    // prior gaming on with 1000ms timer
     deps.gaming.arm(1000);
     const orch = new SleepingOrchestrator(deps);
     await orch.start({ repo: '/x', prompt: 'p', workRoot: '/y', maxDurationMs: 60_000 });
-    // sleep took 200ms — fast-forward via fake timer
     vi.advanceTimersByTime(200);
     state.child!.emit('exit', 0, null);
     for (let i = 0; i < 10; i++) await Promise.resolve();
     const snap = deps.gaming.snapshot();
     expect(snap.active).toBe(true);
     expect(snap.until).not.toBeNull();
-    // Remaining should be roughly 800ms — allow generous tolerance.
     const remaining = (snap.until ?? 0) - Date.now();
     expect(remaining).toBeGreaterThan(700);
     expect(remaining).toBeLessThan(900);

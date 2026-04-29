@@ -49,6 +49,9 @@ function makeContext(overrides: Overrides = {}): {
       permissionMatchers: ['Bash', 'Edit', 'Write'],
       rememberGranularity: 'tight',
       gamingAlwaysAsk: [],
+      sleepMaxDurationMs: 7_200_000,
+      sleepWorktreeDir: '/tmp/kuroboto-test-worktrees',
+      maxConcurrentSleeps: 3,
       failOpen: true,
       ...overrides.policy,
     },
@@ -65,6 +68,7 @@ function makeContext(overrides: Overrides = {}): {
     createWorktree: async () => {},
     removeWorktree: async () => {},
     onSuccess: async () => {},
+    maxConcurrent: 3,
   });
   const injectClients = new InjectClients();
   const ctx: DaemonContext = {
@@ -391,11 +395,11 @@ describe('sleep mode endpoints', () => {
     ({ ctx } = makeContext());
   });
 
-  it('GET /v1/sleeping returns idle when no session', async () => {
+  it('GET /v1/sleeping returns empty active list with capacity when no session', async () => {
     const res = await request(createServer(ctx))
       .get('/v1/sleeping')
       .set('X-Kuroboto-Token', TEST_TOKEN);
-    expect(res.body).toEqual({ active: false });
+    expect(res.body).toEqual({ active: [], capacity: 3 });
   });
 
   it('POST /v1/sleeping rejects empty body', async () => {
@@ -428,7 +432,52 @@ describe('sleep mode endpoints', () => {
     const res = await request(createServer(ctx))
       .delete('/v1/sleeping')
       .set('X-Kuroboto-Token', TEST_TOKEN);
-    expect(res.body).toEqual({ ok: true, cancelled: false, reason: 'idle' });
+    expect(res.body).toEqual({ ok: true, cancelled: false, slugs: [], reason: 'idle' });
+  });
+
+  it('POST /v1/sleeping returns 429 with capacity body when at cap', async () => {
+    // Fake the orchestrator to report at capacity
+    vi.spyOn(ctx.state.sleeping, 'start').mockImplementation(async () => {
+      const err = new Error('capacity reached (3/3)') as Error & { name: string; capacity: number; active: unknown[] };
+      err.name = 'CapacityReachedError';
+      err.capacity = 3;
+      err.active = [
+        { slug: 'a-xyz789', branch: 'sleep/a', worktreePath: '/x/a', startedAt: 1, expectedEndAt: 2 },
+      ];
+      throw err;
+    });
+    const res = await request(createServer(ctx))
+      .post('/v1/sleeping')
+      .set('X-Kuroboto-Token', TEST_TOKEN)
+      .send({ repo: '/r', prompt: 'test' });
+    expect(res.status).toBe(429);
+    expect(res.body).toMatchObject({
+      error: 'capacity reached',
+      capacity: 3,
+    });
+    expect(res.body.active).toBeInstanceOf(Array);
+  });
+
+  it('POST /v1/sleeping/cancel with slug routes to orchestrator.cancel({slug})', async () => {
+    const cancelSpy = vi.spyOn(ctx.state.sleeping, 'cancel').mockResolvedValue({ cancelled: ['target-slug'] });
+    const res = await request(createServer(ctx))
+      .post('/v1/sleeping/cancel')
+      .set('X-Kuroboto-Token', TEST_TOKEN)
+      .send({ slug: 'target-slug' });
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual({ ok: true, cancelled: ['target-slug'] });
+    expect(cancelSpy).toHaveBeenCalledWith({ slug: 'target-slug' });
+  });
+
+  it('POST /v1/sleeping/cancel with all=true routes to orchestrator.cancel({all})', async () => {
+    const cancelSpy = vi.spyOn(ctx.state.sleeping, 'cancel').mockResolvedValue({ cancelled: ['a', 'b'] });
+    const res = await request(createServer(ctx))
+      .post('/v1/sleeping/cancel')
+      .set('X-Kuroboto-Token', TEST_TOKEN)
+      .send({ all: true });
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual({ ok: true, cancelled: ['a', 'b'] });
+    expect(cancelSpy).toHaveBeenCalledWith({ all: true });
   });
 });
 
@@ -594,12 +643,16 @@ describe('prompt context header (session + intent)', () => {
     const { ctx, channel } = makeContext({ mode: 'away' });
     const worktreePath = path.join(tmpDir, 'work', 'fix-the-bot-ux-abc123');
     vi.spyOn(ctx.state.sleeping, 'snapshot').mockReturnValue({
-      active: true,
-      slug: 'fix-the-bot-ux-abc123',
-      branch: 'sleep/fix-the-bot-ux-abc123',
-      worktreePath,
-      startedAt: Date.now(),
-      expectedEndAt: Date.now() + 60_000,
+      active: [
+        {
+          slug: 'fix-the-bot-ux-abc123',
+          branch: 'sleep/fix-the-bot-ux-abc123',
+          worktreePath,
+          startedAt: Date.now(),
+          expectedEndAt: Date.now() + 60_000,
+        },
+      ],
+      capacity: 3,
     });
     const app = createServer(ctx);
     const pending = request(app)
@@ -803,12 +856,16 @@ describe('Q&A flow (tmux inject)', () => {
     });
     const worktreePath = path.join(tmpDir, 'sleep-work');
     vi.spyOn(ctx.state.sleeping, 'snapshot').mockReturnValue({
-      active: true,
-      slug: 'foo-abc123',
-      branch: 'sleep/foo-abc123',
-      worktreePath,
-      startedAt: Date.now(),
-      expectedEndAt: Date.now() + 60_000,
+      active: [
+        {
+          slug: 'foo-abc123',
+          branch: 'sleep/foo-abc123',
+          worktreePath,
+          startedAt: Date.now(),
+          expectedEndAt: Date.now() + 60_000,
+        },
+      ],
+      capacity: 3,
     });
     const app = createServer(ctx);
     await request(app)

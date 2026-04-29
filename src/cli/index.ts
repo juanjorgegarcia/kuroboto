@@ -198,11 +198,13 @@ sleeping
     }
   });
 sleeping
-  .command('cancel')
-  .description('Cancel the active sleep session (worktree is left intact for inspection)')
-  .action(async () => {
+  .command('cancel [slug]')
+  .description('Cancel a sleep session (worktree is left intact for inspection)')
+  .option('--all', 'cancel every active session')
+  .option('--yes', 'skip confirmation prompts; on multi-session without --all or slug, cancels the most recently started one (for non-interactive shells)')
+  .action(async (slug: string | undefined, opts: { all?: boolean; yes?: boolean }) => {
     try {
-      await sleepingCancelCommand();
+      await sleepingCancelCommand(slug, opts);
     } catch (e) {
       console.error(`sleeping cancel failed: ${(e as Error).message}`);
       process.exit(1);
