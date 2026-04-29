@@ -105,6 +105,7 @@ export async function initCommand(): Promise<void> {
       gamingAlwaysAsk: [],
       sleepMaxDurationMs: 2 * 60 * 60 * 1000,
       sleepWorktreeDir: '~/.kuroboto/worktrees',
+      maxConcurrentSleeps: 3,
       failOpen: true,
     },
     notifications: { desktop: desktopEnabled },

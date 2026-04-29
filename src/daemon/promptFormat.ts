@@ -48,8 +48,11 @@ async function buildHeader(
   transcriptPath: string | undefined,
   ctx: PromptFormatContext,
 ): Promise<string> {
-  if (ctx.sleeping.active && cwd && samePath(cwd, ctx.sleeping.worktreePath)) {
-    return `[${ctx.hostname} / 💤 ${stripSlugSuffix(ctx.sleeping.slug)}]`;
+  if (cwd) {
+    const sleepMatch = ctx.sleeping.active.find((s) => samePath(cwd, s.worktreePath));
+    if (sleepMatch) {
+      return `[${ctx.hostname} / 💤 ${stripSlugSuffix(sleepMatch.slug)}]`;
+    }
   }
   const parts = [ctx.hostname];
   const folder = projectName(cwd);
