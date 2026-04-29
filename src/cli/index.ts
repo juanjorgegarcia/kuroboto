@@ -27,6 +27,8 @@ const claudeShortcut =
 // `--debug` lives on every command (including subcommands) — scan argv once
 // up front so it's effective even when passed after a subcommand name. Strip
 // the flag from argv afterward so per-subcommand parsing doesn't choke on it.
+// (Hand-rolled rather than declared on `program` because Commander's `.option`
+// only parses flags that appear before the subcommand name.)
 if (process.argv.includes('--debug')) {
   setDebug(true);
   process.argv = process.argv.filter((a) => a !== '--debug');
@@ -44,9 +46,10 @@ const program = new Command();
 
 program
   .name('kuroboto')
-  .description('Respond to Claude Code prompts from your phone via chat (Telegram first).')
-  .version('0.1.0')
-  .option('--debug', 'trace daemon HTTP requests + responses on stderr', false);
+  .description(
+    'Respond to Claude Code prompts from your phone via chat (Telegram first). Pass --debug on any subcommand to trace daemon HTTP on stderr.',
+  )
+  .version('0.1.0');
 
 program
   .command('init')

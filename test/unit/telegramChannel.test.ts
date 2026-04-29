@@ -370,7 +370,8 @@ describe('TelegramChannel.clearLastMessages', () => {
     await ch.sendNotification('a');
     await ch.sendNotification('b');
     await ch.clearLastMessages(2);
-    expect(ch.getSentMessages()).toHaveLength(0);
+    const tracker = (ch as unknown as { sentMessages: unknown[] }).sentMessages;
+    expect(tracker).toHaveLength(0);
     const r2 = await ch.clearLastMessages(2);
     expect(r2.attempted).toBe(0);
   });

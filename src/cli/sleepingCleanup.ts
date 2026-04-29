@@ -117,6 +117,8 @@ export async function cleanupMerged(
   const prune = await deps.exec('git', ['fetch', '--prune']);
   if (prune.code === 0) {
     for (const r of results) r.remotePruned = true;
+  } else {
+    warn(chalk.yellow(`  ⚠ git fetch --prune failed: ${prune.stderr.trim() || `exit ${prune.code}`}`));
   }
   return results;
 }

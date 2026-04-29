@@ -135,11 +135,6 @@ export class TelegramChannel implements Channel {
     }
   }
 
-  /** Test helper — exposes the tracked outbound message IDs. */
-  getSentMessages(): ReadonlyArray<{ messageId: number; sentAt: number }> {
-    return this.sentMessages;
-  }
-
   async clearTopics(opts: {
     keys?: string[];
     all?: boolean;
