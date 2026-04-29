@@ -5,6 +5,10 @@ export const ChannelConfig = z.discriminatedUnion('type', [
     type: z.literal('telegram'),
     token: z.string().min(1),
     chatId: z.number(),
+    // When true, the chat is a supergroup with forum (topics) enabled and the
+    // daemon routes every outbound message into a per-session topic. Default
+    // false preserves the original 1:1 DM behavior.
+    forumMode: z.boolean().default(false),
   }),
 ]);
 

@@ -94,7 +94,7 @@ export async function initCommand(): Promise<void> {
 
   const authToken = randomBytes(32).toString('hex');
   const config: ConfigT = {
-    channel: { type: 'telegram', token, chatId },
+    channel: { type: 'telegram', token, chatId, forumMode: false },
     daemon: { port, authToken },
     inject,
     policy: {
