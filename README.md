@@ -1,48 +1,310 @@
 # Kuroboto
 
-Respond to Claude Code prompts from your phone via chat (Telegram first).
+Bridge Claude Code permission prompts to your phone via Telegram. Decide from
+the couch, the bus, or while gaming. Plus two autonomous modes for when you
+don't want to think at all.
 
-**Status:** v0.1 in development. See [design spec](docs/design.md) for the full architecture (including the v0.2 redesign in §12).
+**Status:** v0.2 in active development. License: MIT.
 
-## Quickstart (post-build)
+## What it does
+
+Claude Code asks for permission before running `Bash` / `Edit` / `Write`. Instead
+of forcing you to be at the terminal, kuroboto:
+
+- Forwards the prompt to your private Telegram bot with inline buttons
+- Stores your decisions in an auditable JSONL log
+- Can flip the whole flow off and let Claude run autonomously while you're away
+- Can spawn an isolated worktree, run Claude headless against a plan, and open
+  a PR for you to review when it's done
+
+## Architecture
+
+```
+┌─────────────────┐         ┌───────────────────────┐
+│ Claude Code     │  hook   │  kuroboto daemon      │   HTTPS    ┌───────────┐
+│ (PreToolUse,    ├────────►│  (Express loopback,   │◄──────────►│ Telegram  │
+│  Notification,  │  POST   │   X-Kuroboto-Token,   │  long-poll │ Bot API   │
+│  Stop hooks)    │         │   in-memory state)    │            └───────────┘
+└─────────────────┘         └───────────────────────┘                 ▲
+                                                                       │
+                            Filesystem state:                         │ you, on
+                              ~/.config/kuroboto/config.json          │ phone
+                              ~/.config/kuroboto/audit.jsonl          ▼
+                              ~/.config/kuroboto/state.json     ┌───────────────┐
+                              ~/.config/kuroboto/logs/          │  Buttons /    │
+                              <project>/.claude/settings.local  │  text replies │
+                              ~/.kuroboto/worktrees/<slug>/     └───────────────┘
+```
+
+The daemon binds to loopback only and requires a 64-char auth token. Each user
+runs their own bot — no shared infrastructure, no secrets in logs.
+
+## Quickstart
 
 ```bash
 npm install
 npm run build
-npm link            # exposes `kuroboto` globally
+npm link                       # exposes `kuroboto` globally
 
-kuroboto init       # wizard: Telegram bot setup + writes config + installs Claude Code hooks
-kuroboto start --detach
-kuroboto claude     # opens Claude Code with daemon running and hooks active
+kuroboto init                  # wizard: Telegram bot setup + hooks
+kuroboto start --detach        # daemon in background
+kuroboto claude                # opens Claude Code with hooks active
 ```
 
-## Subcommands
+## The four states
 
-| Command | Purpose |
+Two persistent modes (`here` / `away`) plus two transient overrides (`gaming`,
+`sleeping`). The transient ones live only in daemon memory — restart resets
+them, by design.
+
+| State | Enter via | Permission goes to | FYI notification | Persists across restart? |
+|---|---|---|---|---|
+| **here** (default) | `kuroboto here` | Claude Code's terminal UI | delayed (default 60s, cancelled if you reply locally) | yes |
+| **away** | `kuroboto away` | Telegram (4 buttons) | immediate | yes |
+| **gaming** | `kuroboto gaming on [15m]` | auto-allow (except `gamingAlwaysAsk` tools) | immediate, no buttons (FYI only) | no |
+| **sleeping** | `kuroboto sleeping start --prompt …` | full carta-branca + headless Claude in a worktree | start, done, and failure events | no |
+
+Resolution order in `/v1/permission`:
+
+```
+gaming.active  &&  tool ∉ gamingAlwaysAsk        → allow immediately
+mode === 'here'  ||  tool ∉ permissionMatchers   → ask (Claude UI handles it)
+allowlist deny match (cwd settings.local.json)   → deny immediately
+allowlist allow match (cwd settings.local.json)  → allow immediately
+mode === 'away'  &&  tool matched                 → Telegram prompt with 4 buttons
+```
+
+### `here` — you're at the keyboard
+
+Daemon returns `ask`; Claude shows its normal terminal permission UI.
+Notifications are delayed by `policy.notifyDelayMs` (default 60s) — if you
+respond at the terminal first, the `Stop` hook cancels the pending push so your
+phone stays quiet.
+
+### `away` — you're on the phone
+
+Permission prompts arrive in Telegram with four buttons:
+
+- **✅ Allow** — once
+- **🔓 Allow & remember** — allow + persists a matcher to
+  `<cwd>/.claude/settings.local.json` (so future sessions skip the prompt)
+- **❌ Deny** — block
+- **💬 Deny with note** — block, prompt edits to "✏️ aguardando justificativa…",
+  the next text message you send becomes the `permissionDecisionReason` Claude
+  receives
+
+`policy.rememberGranularity` controls the matcher precision:
+
+- `tight` (default) → `Bash(npm install:*)` — first 2 tokens
+- `permissive` → `Bash(npm:*)` — first token only
+
+Permission timeout is `policy.permissionTimeoutMs` (default 55s); on timeout
+the request is denied with `reason: 'timeout'`.
+
+**Telegram message format.** Each prompt shows a header that identifies the
+session at a glance plus what Claude is reasoning about:
+
+```
+[hostname / folder / "first user message"]
+💭 last assistant text before the tool call
+
+Pode rodar?
+Bash: rm -rf /tmp/foo
+```
+
+Sleep mode swaps the header to `[hostname / 💤 slug]` (no first-user-message,
+since the first prompt is just the daemon's plan-execution boilerplate). All
+fields degrade gracefully to omission if the transcript is missing.
+
+### Allowlist match — remember takes effect immediately
+
+Before going to Telegram, the daemon reads `<payload.cwd>/.claude/settings.local.json`
+and short-circuits if the tool call matches a `permissions.deny[]` or
+`permissions.allow[]` entry. Deny wins over allow. This closes the gap where
+🔓 Allow & remember used to only take effect on the *next* Claude session.
+
+Pattern grammar (subset of Claude Code's):
+
+| Pattern | Meaning |
 |---|---|
-| `kuroboto init` | Interactive wizard: BotFather flow, captures token + chat_id, writes `~/.config/kuroboto/config.json`, merges hooks into `~/.claude/settings.json` |
-| `kuroboto start [--detach]` | Spawn the daemon |
-| `kuroboto stop` | SIGTERM the daemon, drains pending requests |
-| `kuroboto status` | Daemon health, channel state, hooks installed, last activity |
-| `kuroboto claude [...args]` | Ensures daemon is up + hooks installed, then execs `claude` |
-| `kuroboto ohayo` | Morning ritual: tmux session "claude" + daemon + Claude Code, all wired |
-| `kuroboto here` / `kuroboto away` | Toggle presence mode (delayed vs. immediate Telegram pushes) |
-| `kuroboto hook <type>` | Internal — invoked by Claude Code hooks (don't call directly) |
+| `Bash` | any Bash call |
+| `Bash(npm:*)` | first token = `npm` |
+| `Bash(npm install:*)` | first two tokens = `npm install` |
+| `Bash(npm install foo)` | exact command |
+| `Edit(/src/**)` | minimatch glob over `file_path` (covers dotfiles) |
+| `Read(//tmp/**)` | double-slash for absolute paths (Claude Code convention) |
 
-## Layers
+Audit sources: `allowlist-allow`, `allowlist-deny`. Lookup is per-request (not
+cached) so concurrent edits in the same project take effect on the next prompt.
 
-- **Layer 1 — Notifications** (fire-and-forget): pushes Telegram message when Claude Code is waiting
-- **Layer 2 — Permissions** (blocking): Claude prompts → Telegram inline keyboard (✅ Allow / ❌ Deny / 📝 Reply) → response routed back as the hook's stdout decision
-- **Layer 3 — Free-text injection** (v0.2): tmux send-keys for arbitrary input
+### `gaming` — distracted, not gone
 
-## Architecture (high-level)
+`kuroboto gaming on [duration]` arms an in-memory flag. While active, every
+`/v1/permission` call short-circuits to `allow` without going through Telegram.
+
+You still get an FYI notification per tool call (`🎮 [proj] Bash: npm test`)
+without buttons — so you can monitor between rounds and `gaming off` if you see
+something destructive.
+
+`policy.gamingAlwaysAsk: ['Bash']` makes specific tools fall back to the normal
+prompt flow. Default is `[]` (full carta-branca).
+
+Optional auto-off timer: `kuroboto gaming on 15m` flips back to off after 15
+minutes. Prior gaming snapshot (including any remaining timer) is preserved
+across nested sleep sessions.
+
+### `sleeping` — fully autonomous
+
+```bash
+kuroboto sleeping start --prompt "implement feature X"
+kuroboto sleeping start --plan ./plan.md
+```
+
+Daemon state machine:
 
 ```
-Claude Code <─stdin/stdout─> kuroboto hook <─HTTP loopback─> kuroboto daemon <─long-poll─> Telegram
+1. createWorktree   → ~/.kuroboto/worktrees/<slug>/, branch sleep/<slug>-<random6>
+2. snapshot gaming  → arm gaming so Claude doesn't block on prompts
+3. spawn claude -p <prompt>   (cwd = worktree)
+4. monitor:
+   - exit 0       → finishSleep: git push + gh repo view (default branch)
+                                 + gh pr create + notify "✅ done — PR: <url>"
+   - exit ≠ 0     → notify "❌ failed — exit N"
+   - max 2h       → kill child + notify "⏰ timeout"
+   - DELETE API   → kill + notify "🛑 cancelled"
+5. restore gaming → flip back to snapshot (preserving any remaining timer)
 ```
 
-The daemon runs locally, listens on `127.0.0.1` only, requires an auth token, and never logs secrets. Each user runs their own bot — no shared infrastructure.
+Invariants:
 
-## License
+- **One sleep at a time** (`POST` returns 409 if one is already active)
+- **Worktree is never auto-deleted** — you inspect / remove manually
+- **Daemon restart cancels** active sessions (state is in-memory only)
+- **Gaming stays armed during `git push`/`gh pr create`** (restore happens
+  after `await onSuccess` resolves)
 
-MIT
+## Free-text Q&A via tmux inject (opt-in)
+
+When Claude pauses for free-form text input (`Notification` hook with message
+`Claude is waiting for your input`), kuroboto can forward the question to
+Telegram with a 💬 Reply button and inject your reply back into the running
+Claude session via `tmux send-keys -l` (literal mode, preserves quotes,
+`$`, backticks, newlines).
+
+Setup (init wizard offers this as a step):
+
+1. `inject.enabled: true` in `~/.config/kuroboto/config.json`
+2. `inject.session: "claude"` (your tmux session name)
+3. `kuroboto ohayo` (creates the tmux session) or `tmux new -s claude` first
+
+The daemon **refuses to start** if `inject.enabled = true` but tmux isn't
+available or the session doesn't exist — silent runtime failures here are
+worse than failed startup.
+
+Failure modes are surfaced inline (Telegram fallback message with the user's
+text + audit `qa-inject-failed`) so a stuck session is visible. Reply timeout
+is `inject.replyTimeoutMs` (default 2h).
+
+## Desktop notifications on sleep finish (opt-in)
+
+When `notifications.desktop: true`, sleep success/failure/timeout events fire
+a native OS toast (Windows Toast / macOS NotificationCenter / libnotify) in
+addition to the Telegram message. Useful when you're at the desk but not
+watching the chat.
+
+Levels: success → silent toast; error/timeout → audible toast.
+
+## Filesystem state
+
+| Path | Contents | Manual edit? |
+|---|---|---|
+| `~/.config/kuroboto/config.json` | bot token, port, authToken (64 chars), policy | yes — restart to apply |
+| `~/.config/kuroboto/state.json` | `{ mode: 'here' \| 'away' }` | yes — restart to apply |
+| `~/.config/kuroboto/audit.jsonl` | append-only JSONL: every permission decision | read with `jq` or `kuroboto audit list/export` |
+| `~/.config/kuroboto/logs/daemon.log` | structured JSONL daemon events | read for debugging |
+| `<project>/.claude/settings.local.json` | matchers persisted by 🔓 Allow & remember | yes, or via `kuroboto allowlist list/export` |
+| `~/.kuroboto/worktrees/<slug>/` | sleep-mode worktrees (kept after success/fail/cancel) | inspect / remove manually |
+
+## CLI surface
+
+```
+kuroboto init                                 # bootstrap (token, hooks, config)
+kuroboto start [-d|--detach]                  # start daemon
+kuroboto stop                                 # SIGTERM + drain pending
+kuroboto status                               # diagnose
+kuroboto here / away                          # toggle persistent mode
+
+kuroboto claude [args]                        # ensures daemon up + spawns claude
+kuroboto ohayo                                # tmux session "claude" + daemon
+kuroboto hook <type>                          # internal, do not call directly
+
+kuroboto allowlist list|export [dir]          # inspect .claude/settings.local.json
+kuroboto audit list|export [--since 5m --cwd P --limit N]
+
+kuroboto gaming on [duration] | off | status
+kuroboto sleeping start --prompt|--plan [--repo P --max 2h] | cancel | status
+```
+
+## HTTP API (loopback only, X-Kuroboto-Token header)
+
+```
+GET  /v1/health           → { ok, uptime, pending, mode, gaming }
+GET/PUT /v1/mode          → { mode: 'here'|'away' }
+GET/PUT /v1/gaming        → { active, until }
+GET/POST/DELETE /v1/sleeping → snapshot + start/cancel
+POST /v1/heartbeat        → cancel pending notifications
+POST /v1/notify           → schedule/send a notification
+POST /v1/permission       → decide (returns { decision, reason?, remember? })
+```
+
+## Why these design choices
+
+- **Daemon, not direct Telegram from hooks** — hooks live ~1s; Telegram needs
+  long-poll. Daemon is the single persistent process that aggregates and serializes.
+- **In-memory transient state** for gaming/sleeping — restart = reset. Avoids
+  "I left gaming on and went to bed = autonomous mode forever" footgun.
+- **Worktree never auto-deleted** — destructive cleanup on bug or in-progress
+  work is worse than leaving an inspectable directory behind.
+- **Audit JSONL append-only** — auditable with any tool (`jq`, `grep`),
+  free-software spirit. CLI commands are convenience, not gatekeepers.
+- **Hook is fail-open** — if daemon is down, Claude falls back to its normal
+  terminal permission UI; the session never freezes.
+- **Loopback + auth token** — your machine, your daemon, no external attack
+  surface.
+
+## Known limitations
+
+- `awaitingNoteFor` (deny-with-note state) is a single slot — two simultaneous
+  deny-with-note clicks collide; the first request waits for `permissionTimeoutMs`
+  and ends with `reason: 'timeout'`.
+- One sleep session at a time (parallel sleeps are designed in `docs/specs/parallel-sleeps.md`
+  but deferred behind PTY injection).
+- Tmux inject locks the user into a tmux session (which interferes with native
+  terminal UX — bell signals, status icons). PTY-based injection is in flight as
+  Spec E (`docs/specs/pty-injection.md`) and removes the tmux requirement.
+- Default `policy.notifyDelayMs` is 60s — recommend lowering to 15s for the
+  intended UX.
+- Sleep mode does not yet write `.kuroboto-sleep.log` (the headless Claude's
+  stdout/stderr is not redirected to disk).
+- `cancel()` has a 5s exit-event timeout; a Claude child stuck in slow network
+  I/O could be left orphaned and a follow-up `start()` could race with it.
+- No native autostart on Windows boot — schedule a Task manually for now.
+
+## Spec docs
+
+Shipped:
+- [docs/specs/gaming-mode.md](docs/specs/gaming-mode.md)
+- [docs/specs/sleep-mode.md](docs/specs/sleep-mode.md)
+- [docs/specs/allowlist-match.md](docs/specs/allowlist-match.md)
+- [docs/specs/prompt-context.md](docs/specs/prompt-context.md)
+- [docs/specs/prompt-freetext-qa.md](docs/specs/prompt-freetext-qa.md)
+- [docs/specs/desktop-notifications.md](docs/specs/desktop-notifications.md)
+
+In flight / planned:
+- [docs/specs/pty-injection.md](docs/specs/pty-injection.md) — Spec E
+- [docs/specs/parallel-sleeps.md](docs/specs/parallel-sleeps.md) — Spec D, deferred
+- [docs/specs-backlog.md](docs/specs-backlog.md) — supergroup+topics, level-2 hooks, etc.
+
+Other:
+- [docs/design.md](docs/design.md) — original v0.2 architecture
+- [docs/workflows/spec-via-sleep.md](docs/workflows/spec-via-sleep.md) — brainstorm → spec → sleep → PR loop
