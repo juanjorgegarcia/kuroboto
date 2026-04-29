@@ -16,8 +16,21 @@ jobs:
           cache: 'npm'
       - run: npm ci
       - run: npx tsc --noEmit
-      # Retry up to 3x for flaky timing-dependent tests in injectClient.test.ts
-      # (FakePty + setImmediate ordering races on slower runners).
-      # TODO: stabilize the tests themselves and drop the retry.
-      - run: npx vitest run --retry=3
+      - name: Stub kuroboto config for tests
+        # Some tests call loadConfig() which reads ~/.config/kuroboto/config.json.
+        # Local devs have one; CI doesn't. Write a minimal valid config so
+        # those tests get past the load step.
+        # TODO: refactor tests to inject loadConfig as a dep instead of relying
+        # on a real file.
+        run: |
+          mkdir -p ~/.config/kuroboto
+          cat > ~/.config/kuroboto/config.json <<'JSON'
+          {
+            "channel": {"type":"telegram","token":"ci-stub","chatId":1},
+            "daemon": {"port":47891,"authToken":"0000000000000000000000000000000000000000000000000000000000000000"},
+            "inject": {"enabled":false},
+            "policy": {"permissionTimeoutMs":1000,"failOpen":true}
+          }
+          JSON
+      - run: npx vitest run
       - run: npm run build
