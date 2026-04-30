@@ -6,7 +6,14 @@ import { readPid, isProcessAlive, sleep } from './util.js';
 export async function stopCommand(): Promise<void> {
   const watchdogPid = await readWatchdogPid();
   if (watchdogPid !== null && isProcessAlive(watchdogPid)) {
-    process.kill(watchdogPid, 'SIGTERM');
+    // isProcessAlive + process.kill are not atomic — the watchdog can die
+    // between the two. Tolerate ESRCH; the polling loop below will report
+    // the actual final state (PR #29 review #4).
+    try {
+      process.kill(watchdogPid, 'SIGTERM');
+    } catch (e) {
+      if ((e as NodeJS.ErrnoException).code !== 'ESRCH') throw e;
+    }
     const deadline = Date.now() + 10_000;
     while (Date.now() < deadline) {
       if (!isProcessAlive(watchdogPid)) {
@@ -26,7 +33,11 @@ export async function stopCommand(): Promise<void> {
     console.log(chalk.yellow('nenhum daemon rodando'));
     return;
   }
-  process.kill(pid, 'SIGTERM');
+  try {
+    process.kill(pid, 'SIGTERM');
+  } catch (e) {
+    if ((e as NodeJS.ErrnoException).code !== 'ESRCH') throw e;
+  }
   const deadline = Date.now() + 10_000;
   while (Date.now() < deadline) {
     if (!isProcessAlive(pid)) {
