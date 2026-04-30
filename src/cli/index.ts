@@ -65,11 +65,17 @@ program
 
 program
   .command('start')
-  .description('Start the daemon')
+  .description('Start the daemon (under watchdog supervision when --detach)')
   .option('-d, --detach', 'Run as detached background process', false)
-  .action(async (opts: { detach: boolean }) => {
+  .option(
+    '--no-watchdog',
+    'Skip the watchdog supervisor and spawn the daemon directly (debug/legacy)',
+    false,
+  )
+  .action(async (opts: { detach: boolean; watchdog: boolean }) => {
     try {
-      await startCommand(opts);
+      // Commander inverts `--no-watchdog` into `opts.watchdog: false`
+      await startCommand({ detach: opts.detach, noWatchdog: opts.watchdog === false });
     } catch (e) {
       console.error(`start failed: ${(e as Error).message}`);
       process.exit(1);
