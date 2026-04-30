@@ -165,6 +165,16 @@ it('WATCHDOG_PID_FILE ausente → linha watchdog não aparece (decoupled from Sp
 
 it('--watch tolera daemon caindo mid-loop sem crash', async () => {
   const daemon = spawnIdleNode();
+  const sigintListeners = process.listeners('SIGINT');
+  // Stub process.exit for the entire test scope — SIGINT handler in runWatch
+  // calls process.exit(0) AFTER statusCommand resolves (setInterval keeps the
+  // loop alive), so a scoped helper like runWithExitCapture would restore the
+  // spy too early and let the exit escape to vitest as an unhandled error.
+  let capturedExit: number | null = null;
+  const exitSpy = vi.spyOn(process, 'exit').mockImplementation(((code?: number) => {
+    capturedExit = code ?? 0;
+    throw new Error(`__exit__:${capturedExit}`);
+  }) as never);
   try {
     const paths = await import('../../src/config/paths.js');
     await fsp.writeFile(paths.PID_FILE, String(daemon.pid));
@@ -179,25 +189,24 @@ it('--watch tolera daemon caindo mid-loop sem crash', async () => {
     };
     stubFetch(handler);
 
-    // Suppress terminal output
     captureIO();
     const { statusCommand } = await import('../../src/cli/status.js');
 
-    // Run 3 watch frames at 0.05s, then let SIGINT fire
-    let frameCount = 0;
-    const renderSpy = vi.spyOn(process.stdout, 'write');
-    renderSpy.mockImplementation((() => true) as never);
-
-    const watchP = statusCommand({ watch: 0.05 });
-    // Wait for 3 render cycles, then simulate Ctrl+C
-    await new Promise<void>((res) => setTimeout(res, 300));
-    process.emit('SIGINT' as NodeJS.Signals);
-    // watchP will resolve (process.exit(0) is called, but process.exit is not stubbed here)
-    // Just check no error was thrown during the interval
-    await Promise.race([watchP, new Promise((r) => setTimeout(r, 200))]).catch(() => {});
-    // No assertion on frameCount — just confirm we didn't throw
+    // 0.5s is the minimum valid interval — lower values exit(2).
+    await statusCommand({ watch: 0.5 });
+    // Wait for ≥2 render cycles (initial + 1 interval tick), then Ctrl+C
+    await new Promise<void>((res) => setTimeout(res, 1100));
+    expect(() => process.emit('SIGINT' as NodeJS.Signals)).toThrow(/__exit__:0/);
+    expect(capturedExit).toBe(0);
+    expect(call).toBeGreaterThanOrEqual(2);
   } finally {
+    exitSpy.mockRestore();
     daemon.close();
+    // Drop SIGINT listeners runWatch registered so subsequent tests aren't
+    // affected by a handler that would call process.exit on the next signal.
+    for (const l of process.listeners('SIGINT')) {
+      if (!sigintListeners.includes(l)) process.off('SIGINT', l);
+    }
   }
 });
 
