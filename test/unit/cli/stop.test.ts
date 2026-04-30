@@ -98,6 +98,71 @@ describe('cli/stop — watchdog-aware routing', () => {
     await stopCommand();
     expect(io.out()).toContain('nenhum daemon rodando');
   });
+
+  it('falls back to direct daemon kill when WATCHDOG_PID_FILE has stale (dead) PID', async () => {
+    // bug-c-watchdog.md test plan: 'kuroboto stop with stale watchdog PID
+    // file falls back to direct daemon kill (legacy path)'.
+    const io = captureIO();
+    const daemon = spawnIdleNode();
+    try {
+      const paths = await import('../../../src/config/paths.js');
+      // Pick a PID that is essentially never alive on the test runner —
+      // process.pid + a large offset, guaranteed > the OS pid space we
+      // could collide with for a freshly-launched test runner.
+      const stalePid = 0x7fffffff;
+      await fsp.writeFile(paths.WATCHDOG_PID_FILE, String(stalePid));
+      await fsp.writeFile(paths.PID_FILE, String(daemon.pid));
+
+      const { stopCommand } = await import('../../../src/cli/stop.js');
+      await stopCommand();
+
+      // The stale watchdog branch was rejected (isProcessAlive=false),
+      // and the legacy direct-daemon kill path took over.
+      await waitForExit(daemon.pid, 5_000);
+      expect(io.out()).toContain('daemon parado');
+      expect(io.out()).not.toContain('watchdog + daemon parados');
+    } finally {
+      daemon.close();
+    }
+  });
+
+  // Skip on Windows: child.kill('SIGTERM') is already forceful there; there
+  // is no way to spawn a child that ignores SIGTERM, so the 10s timeout
+  // path is unreachable. POSIX runners cover the contract.
+  it.skipIf(process.platform === 'win32')(
+    'reports a 10s timeout error when the watchdog ignores SIGTERM',
+    async () => {
+      // bug-c-watchdog.md test plan: 'kuroboto stop times out after 10s if
+      // watchdog hangs'. Spawn a node child that ignores SIGTERM and let
+      // stopCommand's polling loop exhaust its budget.
+      const io = captureIO();
+      const child = spawn(
+        process.execPath,
+        ['-e', "process.on('SIGTERM',()=>{}); setInterval(()=>{},1000);"],
+        { stdio: 'ignore', windowsHide: true },
+      );
+      if (!child.pid) throw new Error('failed to spawn ignoring-sigterm node');
+      try {
+        const paths = await import('../../../src/config/paths.js');
+        await fsp.writeFile(paths.WATCHDOG_PID_FILE, String(child.pid));
+
+        const { stopCommand } = await import('../../../src/cli/stop.js');
+        await stopCommand();
+
+        expect(io.err()).toContain('watchdog não parou em 10s');
+        expect(process.exitCode).toBe(1);
+        // Reset for subsequent tests in this file.
+        process.exitCode = 0;
+      } finally {
+        try {
+          child.kill('SIGKILL');
+        } catch {
+          // best-effort
+        }
+      }
+    },
+    15_000,
+  );
 });
 
 async function waitForExit(pid: number, ms: number): Promise<void> {

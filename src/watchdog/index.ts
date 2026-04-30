@@ -207,6 +207,19 @@ export async function runWatchdog(deps: RunWatchdogDeps = {}): Promise<number> {
     await sendNotifSafe(`🔄 daemon respawnado (#${attemptNumber}) — ${describeExit(info)}`);
   };
 
+  // SIGTERM in two paths:
+  // - During `await sleep(wait)` between respawns: handleStopSignal is the
+  //   ONLY path that runs cleanupPidFiles + emits the "stopped cleanly" log,
+  //   because process.exit(0) fires from handleStopSignal itself.
+  // - During `await exitPromise` (daemon running normally — common case):
+  //   the kill below makes exitPromise resolve immediately, the main loop
+  //   unblocks, hits `if (stopping) break`, runs cleanupPidFiles + the
+  //   "stopped cleanly" log, then returns 0 — and process.exit(0) fires
+  //   from the top-level then-handler, racing handleStopSignal's polling
+  //   waitForExit. handleStopSignal's tail (cleanupPidFiles + log) is
+  //   unreachable in that path.
+  // Both terminal paths run cleanupPidFiles (idempotent via unlinkBest) and
+  // emit the same log line, so debugging from watchdog.log is consistent.
   const handleStopSignal = async (sig: NodeJS.Signals): Promise<void> => {
     if (stopping) return;
     stopping = true;
@@ -434,7 +447,12 @@ export async function runWatchdog(deps: RunWatchdogDeps = {}): Promise<number> {
     await sleep(wait);
   }
 
+  // Reached only via `if (stopping) break` after the main loop's exitPromise
+  // resolved — the common SIGTERM-while-running path. Emit the same
+  // "stopped cleanly" log handleStopSignal would emit so debugging from
+  // watchdog.log is consistent across both terminal paths.
   await cleanupPidFiles();
+  log('watchdog stopped cleanly');
   return 0;
 }
 

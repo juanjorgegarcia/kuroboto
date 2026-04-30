@@ -94,37 +94,9 @@ describe('watchdog startup path (PR #23 regression coverage)', () => {
     expect(startupLog).toContain('FAKE_STARTUP_ERROR');
   }, 30_000);
 
-  it('does not leak stdio FDs across respawn cycles', async () => {
-    // Daemon-mock that exits fast so the watchdog cycles through several
-    // respawn iterations within the 5-in-60s budget. With the FD leak fix
-    // in place, the watchdog's own FD count should stay flat across cycles.
-    const scriptPath = path.join(tmpDir, 'daemon-fast-exit.mjs');
-    await fsp.writeFile(scriptPath, `process.exit(1);\n`);
-
-    let respawnCount = 0;
-    const exitCode = await runWatchdog({
-      paths: tmpPaths(),
-      daemonEntry: scriptPath,
-      loadConfigImpl: async () => baseConfig(),
-      silent: true,
-      auditImpl: async () => {},
-      notifyImpl: async () => true,
-      onDaemonRespawn: () => {
-        respawnCount += 1;
-      },
-      signalRegistrar: () => {
-        /* no-op */
-      },
-    });
-
-    // The watchdog terminated (gave up). What we care about: it stayed
-    // healthy enough to iterate several times without crashing on EMFILE
-    // (which would happen if FDs leaked on every cycle).
-    expect(exitCode).toBe(1);
-    // Hook only fires from iteration 2 onwards; total iterations may be
-    // 1 (first start fails before we ever respawn) which is acceptable —
-    // the FD leak is structurally fixed by the close-after-spawn pattern,
-    // and the watchdog completing without an FS exception is the proof.
-    expect(respawnCount).toBeGreaterThanOrEqual(0);
-  }, 30_000);
+  // Note: FD-leak resilience across respawn cycles is exercised by
+  // watchdogBugC.test.ts's 'gives up after 5 rapid respawns' scenario,
+  // which drives 5+ real spawn cycles and would crash with EMFILE if FDs
+  // leaked. Duplicating that here with a fast-exit daemon would just be
+  // a tautological 'startup-failure exits cleanly' check.
 });

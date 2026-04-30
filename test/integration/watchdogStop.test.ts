@@ -57,13 +57,23 @@ const baseConfig = () => ({
   daemon: { port: chosenPort },
 });
 
-function mockDaemonScript(port: number, opts: { ignoreSigterm?: boolean } = {}): string {
+function mockDaemonScript(
+  port: number,
+  daemonPidFile: string,
+  opts: { ignoreSigterm?: boolean } = {},
+): string {
   const sigtermBody = opts.ignoreSigterm
     ? `// Intentionally ignore SIGTERM — exercises the SIGKILL escalation path.
        process.on('SIGTERM', () => {});`
     : `process.on('SIGTERM', () => process.exit(0));`;
+  // Real daemon writes its own PID file at startup (src/daemon/index.ts).
+  // The mock has to mirror this so the cleanupPidFiles assertion below is
+  // non-vacuous — it verifies the file was both created AND removed,
+  // not just that it never existed.
   return `
 import http from 'node:http';
+import fs from 'node:fs';
+fs.writeFileSync(${JSON.stringify(daemonPidFile)}, String(process.pid));
 const server = http.createServer((req, res) => {
   if (req.url === '/v1/health') {
     res.writeHead(200, { 'content-type': 'application/json' });
@@ -82,8 +92,8 @@ setInterval(() => {}, 60_000);
 describe('watchdog stop path (SIGTERM / SIGKILL escalation + PID file cleanup)', () => {
   it('SIGTERM kills the daemon and removes both PID files', async () => {
     const scriptPath = path.join(tmpDir, 'daemon-mock.mjs');
-    await fsp.writeFile(scriptPath, mockDaemonScript(chosenPort));
     const paths = tmpPaths();
+    await fsp.writeFile(scriptPath, mockDaemonScript(chosenPort, paths.daemonPidFile));
 
     let signalHandler: ((sig: NodeJS.Signals) => void) | null = null;
     const completed = runWatchdog({
@@ -99,13 +109,19 @@ describe('watchdog stop path (SIGTERM / SIGKILL escalation + PID file cleanup)',
     });
 
     await waitForFile(paths.pidFile, 8_000);
+    await waitForFile(paths.daemonPidFile, 8_000);
+    // Both PID files exist before the stop — the mock daemon writes its own
+    // (mirroring src/daemon/index.ts), the watchdog writes its own.
     expect(fs.existsSync(paths.pidFile)).toBe(true);
+    expect(fs.existsSync(paths.daemonPidFile)).toBe(true);
 
     // Trigger the stop — same path that `kuroboto stop` exercises in production.
     signalHandler?.('SIGTERM');
     const exitCode = await completed;
 
     expect(exitCode).toBe(0);
+    // cleanupPidFiles must remove BOTH (non-vacuous now that we asserted
+    // they existed beforehand).
     expect(fs.existsSync(paths.pidFile)).toBe(false);
     expect(fs.existsSync(paths.daemonPidFile)).toBe(false);
   }, 15_000);
@@ -119,8 +135,11 @@ describe('watchdog stop path (SIGTERM / SIGKILL escalation + PID file cleanup)',
       // code there. Verifying the grace-then-escalate path requires a real
       // signal-aware runtime.
       const scriptPath = path.join(tmpDir, 'daemon-ignores-sigterm.mjs');
-      await fsp.writeFile(scriptPath, mockDaemonScript(chosenPort, { ignoreSigterm: true }));
       const paths = tmpPaths();
+      await fsp.writeFile(
+        scriptPath,
+        mockDaemonScript(chosenPort, paths.daemonPidFile, { ignoreSigterm: true }),
+      );
 
       let signalHandler: ((sig: NodeJS.Signals) => void) | null = null;
       const completed = runWatchdog({
