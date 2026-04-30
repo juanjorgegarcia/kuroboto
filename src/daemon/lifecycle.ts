@@ -1,5 +1,6 @@
 import fsp from 'node:fs/promises';
 import os from 'node:os';
+import path from 'node:path';
 import { type Server } from 'node:http';
 import { spawn as nodeSpawn, type SpawnOptions } from 'node:child_process';
 import type { Channel } from '../channels/Channel.js';
@@ -26,6 +27,7 @@ import { validateTmuxAvailable } from '../inject/validate.js';
 import { InjectClients } from './injectClients.js';
 import { appendAudit } from './audit.js';
 import { topicContextSystem } from './topicContext.js';
+import { scanOrphanWorktrees } from './orphanWorktrees.js';
 
 export interface RunningDaemon {
   stop(): Promise<void>;
@@ -190,7 +192,84 @@ export async function startDaemon(initialConfig: ConfigT): Promise<RunningDaemon
     // best-effort
   }
 
+  // Spec G v1: surface sleep worktrees that look orphaned after a watchdog
+  // respawn or hard restart. Best-effort — failures don't block startup.
+  void announceOrphanedWorktrees(config, channel, logger);
+
   return { stop };
+}
+
+async function announceOrphanedWorktrees(
+  config: ConfigT,
+  channel: Channel,
+  logger: Logger,
+): Promise<void> {
+  try {
+    const workRoot = expandHome(config.policy.sleepWorktreeDir);
+    const orphans = await scanOrphanWorktrees({
+      workRoot,
+      log: (msg, fields) => logger.info(msg, fields),
+      listOpenSleepBranches: () => listOpenSleepBranchesViaGh(logger),
+    });
+    if (orphans.length === 0) return;
+    for (const o of orphans) {
+      await channel
+        .sendNotification(
+          `⚠️ sleep ${o.slug} ficou órfão durante restart; investigar manualmente`,
+          topicContextSystem(),
+        )
+        .catch(() => {
+          // best-effort
+        });
+    }
+  } catch (e) {
+    logger.warn('orphan worktree scan failed', { err: (e as Error).message });
+  }
+}
+
+function expandHome(dir: string): string {
+  if (dir.startsWith('~/') || dir === '~') {
+    return path.join(os.homedir(), dir.slice(1).replace(/^[\\/]/, ''));
+  }
+  return dir;
+}
+
+async function listOpenSleepBranchesViaGh(logger: Logger): Promise<Set<string>> {
+  return new Promise((resolve) => {
+    const child = nodeSpawn(
+      'gh',
+      ['pr', 'list', '--state', 'open', '--json', 'headRefName', '--limit', '100'],
+      { shell: false, windowsHide: true },
+    );
+    let stdout = '';
+    let stderr = '';
+    child.stdout?.on('data', (b) => (stdout += b.toString()));
+    child.stderr?.on('data', (b) => (stderr += b.toString()));
+    child.on('error', (e) => {
+      logger.warn('gh pr list spawn error', { err: e.message });
+      resolve(new Set());
+    });
+    child.on('close', (code) => {
+      if (code !== 0) {
+        logger.warn('gh pr list non-zero', { code, stderr: stderr.trim().slice(0, 200) });
+        resolve(new Set());
+        return;
+      }
+      try {
+        const prs = JSON.parse(stdout) as Array<{ headRefName: string }>;
+        const slugs = new Set<string>();
+        for (const pr of prs) {
+          if (pr.headRefName?.startsWith('sleep/')) {
+            slugs.add(pr.headRefName.slice('sleep/'.length));
+          }
+        }
+        resolve(slugs);
+      } catch (e) {
+        logger.warn('gh pr list parse failed', { err: (e as Error).message });
+        resolve(new Set());
+      }
+    });
+  });
 }
 
 async function ensureNoExistingDaemon(): Promise<void> {

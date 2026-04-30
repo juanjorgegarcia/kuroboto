@@ -11,6 +11,12 @@ import { checkHealth, sleep } from './util.js';
 
 export interface StartOptions {
   detach?: boolean;
+  /**
+   * When true, skip the watchdog and spawn the daemon directly (legacy
+   * pre-Spec-G behavior). Useful for debugging — see the daemon's own
+   * stdout/stderr without the watchdog supervision layer in between.
+   */
+  noWatchdog?: boolean;
 }
 
 export async function startCommand(opts: StartOptions): Promise<void> {
@@ -20,7 +26,7 @@ export async function startCommand(opts: StartOptions): Promise<void> {
     return;
   }
   if (opts.detach) {
-    await startDetached();
+    await startDetached(opts);
     return;
   }
   await startForeground();
@@ -33,9 +39,11 @@ async function startForeground(): Promise<void> {
   await new Promise<void>(() => {});
 }
 
-async function startDetached(): Promise<void> {
+async function startDetached(opts: StartOptions): Promise<void> {
   const here = path.dirname(fileURLToPath(import.meta.url));
-  const daemonEntry = path.join(here, '..', 'daemon', 'index.js');
+  const entry = opts.noWatchdog
+    ? path.join(here, '..', 'daemon', 'index.js')
+    : path.join(here, '..', 'watchdog', 'index.js');
 
   // Truncate before each start so a stale crash log from an earlier run
   // doesn't get surfaced as the cause of a new failure.
@@ -44,7 +52,7 @@ async function startDetached(): Promise<void> {
   const out = openSync(STARTUP_LOG_FILE, 'a');
   const err = openSync(STARTUP_LOG_FILE, 'a');
 
-  const child = spawn(process.execPath, [daemonEntry], {
+  const child = spawn(process.execPath, [entry], {
     detached: true,
     stdio: ['ignore', out, err],
     windowsHide: true,
@@ -60,7 +68,8 @@ async function startDetached(): Promise<void> {
   while (Date.now() < deadline) {
     const r = await checkHealth();
     if (r.ok) {
-      console.log(chalk.green(`daemon iniciado (PID=${child.pid})`));
+      const label = opts.noWatchdog ? 'daemon' : 'watchdog';
+      console.log(chalk.green(`daemon iniciado (${label} PID=${child.pid})`));
       return;
     }
     if (exitInfo !== null) {
