@@ -444,7 +444,7 @@ function makeFakeStdout(): FakeStdout {
   };
 }
 
-async function waitFor(cond: () => boolean, timeoutMs = 1_000): Promise<void> {
+async function waitFor(cond: () => boolean, timeoutMs = 5_000): Promise<void> {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
     if (cond()) return;

@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import {
   humanizeDuration,
   formatCountdown,
@@ -54,17 +54,29 @@ describe('humanizeDuration', () => {
 });
 
 describe('formatCountdown', () => {
+  // Mock the clock so Windows' coarse timer (~15ms) doesn't cause the 1s test
+  // to land on diff=985ms → "0s" between Date.now() in the test and inside
+  // formatCountdown.
+  const NOW = 1_700_000_000_000;
+  beforeEach(() => {
+    vi.useFakeTimers();
+    vi.setSystemTime(NOW);
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
   it('future 1s → "1s"', () => {
-    expect(formatCountdown(Date.now() + 1_000)).toBe('1s');
+    expect(formatCountdown(NOW + 1_000)).toBe('1s');
   });
   it('future 90_000_000ms → "1d1h"', () => {
-    expect(formatCountdown(Date.now() + 90_000_000)).toBe('1d1h');
+    expect(formatCountdown(NOW + 90_000_000)).toBe('1d1h');
   });
   it('past 5s → "(expirou há 5s)"', () => {
-    expect(formatCountdown(Date.now() - 5_000)).toBe('(expirou há 5s)');
+    expect(formatCountdown(NOW - 5_000)).toBe('(expirou há 5s)');
   });
   it('past 30_000_000ms → "(expirou há 8h20m)"', () => {
-    expect(formatCountdown(Date.now() - 30_000_000)).toBe('(expirou há 8h20m)');
+    expect(formatCountdown(NOW - 30_000_000)).toBe('(expirou há 8h20m)');
   });
 });
 
