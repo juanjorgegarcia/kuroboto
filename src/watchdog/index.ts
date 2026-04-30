@@ -305,6 +305,10 @@ export async function runWatchdog(deps: RunWatchdogDeps = {}): Promise<number> {
 
     if (healthy === 'exited-before-healthy') {
       const info = await exitPromise;
+      // SIGTERM during startup is the user calling `kuroboto stop` — not a
+      // failure. Bail cleanly instead of treating it as a crash and emitting
+      // a 'startup-failure' notification.
+      if (stopping) break;
       log(`daemon exited before healthy: code=${info.code} signal=${info.signal}`);
       const decision = shouldRespawn({
         everHealthy: state.everHealthy,
@@ -335,6 +339,9 @@ export async function runWatchdog(deps: RunWatchdogDeps = {}): Promise<number> {
     }
 
     if (healthy === 'timeout') {
+      // SIGTERM during the health-poll window — same logic as the
+      // exited-before-healthy guard above.
+      if (stopping) break;
       log('daemon /health did not return 200 within 10s');
       // Kill the unhealthy child so it doesn't linger.
       if (child.exitCode === null) {
