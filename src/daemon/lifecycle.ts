@@ -77,6 +77,7 @@ export async function startDaemon(initialConfig: ConfigT): Promise<RunningDaemon
     notifyDesktop: desktopNotifyDep,
     logger,
     maxConcurrent: config.policy.maxConcurrentSleeps,
+    defaultModel: config.policy.sleepModel,
     onSuccess: (session) =>
       finishSleep(session, {
         exec: async (cmd, args, opts) => {

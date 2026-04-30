@@ -88,6 +88,7 @@ export function registerRoutes(app: Express, ctx: DaemonContext): void {
       prompt?: string;
       plan?: string;
       maxDurationMs?: number;
+      model?: string;
     };
     if (typeof body.repo !== 'string' || !body.repo) {
       res.status(400).json({ error: 'repo required' });
@@ -101,6 +102,10 @@ export function registerRoutes(app: Express, ctx: DaemonContext): void {
       res.status(400).json({ error: 'prompt and plan are mutually exclusive' });
       return;
     }
+    if (body.model !== undefined && body.model !== 'sonnet' && body.model !== 'opus') {
+      res.status(400).json({ error: "model must be 'sonnet' or 'opus'" });
+      return;
+    }
     const maxDurationMs = body.maxDurationMs ?? ctx.config.policy.sleepMaxDurationMs;
     const workRoot = expandHome(ctx.config.policy.sleepWorktreeDir);
     try {
@@ -111,6 +116,7 @@ export function registerRoutes(app: Express, ctx: DaemonContext): void {
         maxDurationMs,
         prompt: body.prompt,
         plan: body.plan,
+        model: body.model as 'sonnet' | 'opus' | undefined,
       });
       res.status(202).json({
         ok: true,

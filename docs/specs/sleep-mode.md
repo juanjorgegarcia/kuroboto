@@ -59,10 +59,45 @@ doesn't need filesystem access to the user's plan). `prompt` is the literal prom
 {
   "policy": {
     "sleepMaxDurationMs": 7200000,           // 2h default
-    "sleepWorktreeDir": "~/.kuroboto/worktrees"   // override per platform
+    "sleepWorktreeDir": "~/.kuroboto/worktrees",  // override per platform
+    "sleepModel": "sonnet"                    // 'sonnet' | 'opus' — see addendum below
   }
 }
 ```
+
+## Addendum 2026-04-30 — `sleepModel` config + `--model` flag
+
+**Problem.** Sleep spawns `claude -p ...` without pinning a model, so the
+spawned process inherits whatever the user has set as their interactive
+default in `~/.claude/settings.json`. Many devs leave that on `opus` for
+the comfort of the more capable model during interactive work — sleep
+inherits the same default and silently burns tokens at ~5× the necessary
+rate. Spec-driven sleep work is mostly mechanical execution of an already
+fully-written plan; opus's quality bump is largely wasted on this workload.
+
+**Solution.**
+- New config key `policy.sleepModel: 'sonnet' | 'opus'`, default `'sonnet'`.
+- New CLI flag `kuroboto sleeping start --model <name>` overriding the
+  default per-invocation. Validates against the same enum.
+- HTTP `POST /v1/sleeping` accepts `{model?: 'sonnet' | 'opus'}` in the
+  body, validates, then forwards to `SleepingOrchestrator.start({model})`.
+- `SleepingOrchestrator` constructor accepts `defaultModel` from the
+  daemon. The spawn args become
+  `['--dangerously-skip-permissions', '--model', model, '-p', prompt]`.
+
+**Rationale for the default.** Sonnet runs the v0.2 spec set without
+quality issues in dogfood. Opus is one flag away when a spec is genuinely
+complex (heavy refactor, novel API design). The cost differential is real:
+sonnet ≈ $3/$15 per MTok input/output, opus ≈ $15/$75 — a 2h sleep that
+would have cost $4–15 on opus runs $0.80–3 on sonnet.
+
+**Test plan.**
+- Unit: `sleeping.test.ts` cases `'uses defaultModel when start request omits model'`
+  and `'honors per-invocation model override'` cover both branches by
+  spying on the spawn args.
+- Integration: existing `daemon.test.ts` and `notifyFilter.test.ts`
+  construct `SleepingOrchestrator` with `defaultModel: 'sonnet'`, exercising
+  the wiring end-to-end.
 
 ## Slug + branch + worktree naming
 

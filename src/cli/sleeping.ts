@@ -11,6 +11,7 @@ interface StartOpts {
   repo?: string;
   max?: string;
   name?: string;
+  model?: string;
 }
 
 interface CancelOpts {
@@ -37,7 +38,7 @@ interface CapacityErrorBody {
   active: SessionSnap[];
 }
 
-async function postStart(body: { repo: string; prompt?: string; plan?: string; maxDurationMs?: number }) {
+async function postStart(body: { repo: string; prompt?: string; plan?: string; maxDurationMs?: number; model?: 'sonnet' | 'opus' }) {
   const res = await kuroFetch<{ slug: string; branch: string; worktreePath: string } | CapacityErrorBody | { error?: string }>(
     '/v1/sleeping',
     { method: 'POST', body },
@@ -105,7 +106,15 @@ export async function sleepingStartCommand(opts: StartOpts): Promise<void> {
   }
   const repo = path.resolve(opts.repo ?? process.cwd());
   const maxDurationMs = opts.max ? parseDuration(opts.max) : undefined;
-  const session = await postStart({ repo, prompt: opts.prompt, plan, maxDurationMs });
+  let model: 'sonnet' | 'opus' | undefined;
+  if (opts.model !== undefined) {
+    if (opts.model !== 'sonnet' && opts.model !== 'opus') {
+      console.error(chalk.red(`--model must be 'sonnet' or 'opus' (got '${opts.model}')`));
+      process.exit(1);
+    }
+    model = opts.model;
+  }
+  const session = await postStart({ repo, prompt: opts.prompt, plan, maxDurationMs, model });
   console.log(chalk.green(`💤 sleep started`));
   console.log(`  slug:     ${session.slug}`);
   console.log(`  branch:   ${session.branch}`);

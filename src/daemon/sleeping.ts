@@ -21,6 +21,9 @@ export interface SleepingDeps {
   logger?: MarkerRelayLogger;
   /** Maximum concurrent sleep sessions. Spec D — defaults to 3 in config. */
   maxConcurrent: number;
+  /** Default claude model when the start request doesn't specify one.
+   *  'sonnet' is the right answer for spec-driven work — see schema docstring. */
+  defaultModel: 'sonnet' | 'opus';
 }
 
 export interface SleepingStartRequest {
@@ -29,6 +32,8 @@ export interface SleepingStartRequest {
   maxDurationMs: number;
   prompt?: string;
   plan?: string;
+  /** Override per-invocation. When unset, falls back to deps.defaultModel. */
+  model?: 'sonnet' | 'opus';
 }
 
 export interface SleepingSession {
@@ -162,9 +167,14 @@ export class SleepingOrchestrator {
     // anyway), so the round-trip is wasted bandwidth — and skipping the hook
     // also stops claude's own "Claude needs permission..." Notification hook
     // from firing on every tool call.
+    // --model pins the model so sleep doesn't accidentally inherit whatever
+    // the user has set as their interactive default (typically opus). Sonnet
+    // is the right answer for spec-driven mechanical execution; opus override
+    // is available per-invocation via the start request.
+    const model = req.model ?? this.deps.defaultModel;
     const child = this.deps.spawn(
       'claude',
-      ['--dangerously-skip-permissions', '-p', finalPrompt],
+      ['--dangerously-skip-permissions', '--model', model, '-p', finalPrompt],
       { cwd: worktreePath },
     );
 

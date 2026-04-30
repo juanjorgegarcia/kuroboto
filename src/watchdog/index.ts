@@ -144,6 +144,23 @@ export async function runWatchdog(deps: RunWatchdogDeps = {}): Promise<number> {
 
   let child: ChildProcess | null = null;
   let stopping = false;
+  // Tracks whether the next successful spawn constitutes a respawn (i.e. the
+  // loop has iterated at least once already). The hook fires with the NEW
+  // pid — not the dying child's — and only when a respawn actually happens.
+  let isRespawn = false;
+
+  // Open the startup log for stdio redirect; on failure log + fall back to a
+  // null sink so spawn doesn't throw. Runs inside runWatchdog so it can use
+  // the closured logger (PR #29 review #6: silent fallback was masking real
+  // permission/FS errors).
+  const openLogFd = (file: string): number => {
+    try {
+      return fs.openSync(file, 'a');
+    } catch (e) {
+      log(`openLogFd fallback for ${file}: ${(e as Error).message}`);
+      return fs.openSync(process.platform === 'win32' ? 'nul' : '/dev/null', 'a');
+    }
+  };
 
   const cleanupPidFiles = async (): Promise<void> => {
     await unlinkBest(pidFile);
@@ -190,6 +207,19 @@ export async function runWatchdog(deps: RunWatchdogDeps = {}): Promise<number> {
     await sendNotifSafe(`🔄 daemon respawnado (#${attemptNumber}) — ${describeExit(info)}`);
   };
 
+  // SIGTERM in two paths:
+  // - During `await sleep(wait)` between respawns: handleStopSignal is the
+  //   ONLY path that runs cleanupPidFiles + emits the "stopped cleanly" log,
+  //   because process.exit(0) fires from handleStopSignal itself.
+  // - During `await exitPromise` (daemon running normally — common case):
+  //   the kill below makes exitPromise resolve immediately, the main loop
+  //   unblocks, hits `if (stopping) break`, runs cleanupPidFiles + the
+  //   "stopped cleanly" log, then returns 0 — and process.exit(0) fires
+  //   from the top-level then-handler, racing handleStopSignal's polling
+  //   waitForExit. handleStopSignal's tail (cleanupPidFiles + log) is
+  //   unreachable in that path.
+  // Both terminal paths run cleanupPidFiles (idempotent via unlinkBest) and
+  // emit the same log line, so debugging from watchdog.log is consistent.
   const handleStopSignal = async (sig: NodeJS.Signals): Promise<void> => {
     if (stopping) return;
     stopping = true;
@@ -231,15 +261,25 @@ export async function runWatchdog(deps: RunWatchdogDeps = {}): Promise<number> {
   while (!stopping) {
     log(`spawning daemon (attempt #${state.attempt + 1})`);
     let spawnedAt = now();
+    // Capture FDs into named vars so we can close our own handles after spawn.
+    // Otherwise each respawn cycle leaks 2 FDs into the watchdog process
+    // (PR #29 review #5).
+    let outFd: number | null = null;
+    let errFd: number | null = null;
     try {
+      outFd = openLogFd(startupLog);
+      errFd = openLogFd(startupLog);
       child = spawnFn(process.execPath, [daemonEntry], {
         // stdio shares the startup log so the parent CLI can tail any
         // startup error (PR #23 path stays intact). We don't `detached: true`
         // here — the daemon must be a child of the watchdog so `exit` fires.
-        stdio: ['ignore', openSafe(startupLog), openSafe(startupLog)],
+        stdio: ['ignore', outFd, errFd],
         windowsHide: true,
       });
     } catch (e) {
+      // Close any FDs we opened before the spawn failed.
+      if (outFd !== null) try { fs.closeSync(outFd); } catch { /* best-effort */ }
+      if (errFd !== null) try { fs.closeSync(errFd); } catch { /* best-effort */ }
       const detail = `spawn threw: ${(e as Error).message}`;
       log(detail);
       await appendAuditSafe({
@@ -251,6 +291,18 @@ export async function runWatchdog(deps: RunWatchdogDeps = {}): Promise<number> {
       deps.onTerminal?.('startup-failure');
       await cleanupPidFiles();
       return 1;
+    }
+    // Close the watchdog's handles to the FDs — the child has its own copies.
+    // Without this, every respawn cycle leaks 2 FDs into the watchdog process.
+    try { fs.closeSync(outFd); } catch { /* best-effort */ }
+    try { fs.closeSync(errFd); } catch { /* best-effort */ }
+
+    // Fire onDaemonRespawn AFTER the new process is spawned, with the NEW
+    // pid — not the dying child's. Skipped on the first iteration since that
+    // is a fresh start, not a respawn (PR #29 review #2/#3). Putting it here
+    // also covers the timeout-respawn path that was missing the hook.
+    if (isRespawn) {
+      deps.onDaemonRespawn?.(child.pid);
     }
 
     const exitPromise = waitForChildExit(child);
@@ -266,6 +318,10 @@ export async function runWatchdog(deps: RunWatchdogDeps = {}): Promise<number> {
 
     if (healthy === 'exited-before-healthy') {
       const info = await exitPromise;
+      // SIGTERM during startup is the user calling `kuroboto stop` — not a
+      // failure. Bail cleanly instead of treating it as a crash and emitting
+      // a 'startup-failure' notification.
+      if (stopping) break;
       log(`daemon exited before healthy: code=${info.code} signal=${info.signal}`);
       const decision = shouldRespawn({
         everHealthy: state.everHealthy,
@@ -289,13 +345,16 @@ export async function runWatchdog(deps: RunWatchdogDeps = {}): Promise<number> {
         reason: describeExit(info),
       });
       await emitRespawnNotif(state.respawnTimestamps.length, info);
-      deps.onDaemonRespawn?.(child.pid);
+      isRespawn = true;
       log(`backoff ${wait}ms before respawn`);
       await sleep(wait);
       continue;
     }
 
     if (healthy === 'timeout') {
+      // SIGTERM during the health-poll window — same logic as the
+      // exited-before-healthy guard above.
+      if (stopping) break;
       log('daemon /health did not return 200 within 10s');
       // Kill the unhealthy child so it doesn't linger.
       if (child.exitCode === null) {
@@ -337,6 +396,7 @@ export async function runWatchdog(deps: RunWatchdogDeps = {}): Promise<number> {
         reason: 'health-timeout',
       });
       await emitRespawnNotif(state.respawnTimestamps.length, info);
+      isRespawn = true;
       await sleep(wait);
       continue;
     }
@@ -382,12 +442,17 @@ export async function runWatchdog(deps: RunWatchdogDeps = {}): Promise<number> {
       reason: describeExit(info),
     });
     await emitRespawnNotif(state.respawnTimestamps.length, info);
-    deps.onDaemonRespawn?.(child.pid);
+    isRespawn = true;
     log(`backoff ${wait}ms before respawn`);
     await sleep(wait);
   }
 
+  // Reached only via `if (stopping) break` after the main loop's exitPromise
+  // resolved — the common SIGTERM-while-running path. Emit the same
+  // "stopped cleanly" log handleStopSignal would emit so debugging from
+  // watchdog.log is consistent across both terminal paths.
   await cleanupPidFiles();
+  log('watchdog stopped cleanly');
   return 0;
 }
 
@@ -484,16 +549,6 @@ function makeLogger(deps: RunWatchdogDeps, logFile: string): (msg: string) => vo
     }
     process.stderr.write(`[watchdog] ${msg}\n`);
   };
-}
-
-function openSafe(file: string): number {
-  try {
-    return fs.openSync(file, 'a');
-  } catch {
-    // If the startup log can't be opened (e.g. tests with no fs), fall back
-    // to /dev/null-equivalent so spawn doesn't throw.
-    return fs.openSync(process.platform === 'win32' ? 'nul' : '/dev/null', 'a');
-  }
 }
 
 async function unlinkBest(file: string): Promise<void> {

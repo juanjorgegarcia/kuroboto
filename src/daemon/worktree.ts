@@ -1,5 +1,4 @@
 import fsp from 'node:fs/promises';
-import path from 'node:path';
 import { spawn } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
 
@@ -49,14 +48,20 @@ export function slugify(input: string, withSuffix: boolean = true): string {
 }
 
 export async function worktreeExists(repoRoot: string, dir: string): Promise<boolean> {
+  let real: string;
   try {
-    await fsp.stat(dir);
+    // realpath resolves junctions/symlinks (Windows tmp paths under
+    // C:\Users\<runner>\AppData\Local\Temp are usually NTFS junctions to
+    // somewhere else; git outputs the resolved path, but path.resolve
+    // alone does not). Returns ENOENT when the dir is gone.
+    real = await fsp.realpath(dir);
   } catch {
     return false;
   }
   const r = await runGit(repoRoot, ['worktree', 'list', '--porcelain']);
-  // Normalize paths for comparison (git may use forward slashes on Windows)
-  const normalizedDir = path.resolve(dir).replace(/\\/g, '/');
+  // Normalize for comparison: git on Windows emits forward slashes in
+  // --porcelain output even though Node returns backslashes from realpath.
+  const normalizedDir = real.replace(/\\/g, '/');
   return r.stdout.includes(normalizedDir);
 }
 
