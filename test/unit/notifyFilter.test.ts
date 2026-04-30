@@ -48,6 +48,7 @@ function makeContext(): { ctx: DaemonContext; channel: MockChannel } {
     removeWorktree: async () => {},
     onSuccess: async () => {},
     maxConcurrent: 3,
+    defaultModel: 'sonnet',
   });
   const ctx: DaemonContext = {
     config,

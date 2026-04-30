@@ -163,6 +163,7 @@ export async function initCommand(): Promise<void> {
       sleepMaxDurationMs: 8 * 60 * 60 * 1000,
       sleepWorktreeDir: '~/.kuroboto/worktrees',
       maxConcurrentSleeps: 6,
+      sleepModel: 'sonnet',
       failOpen: true,
     },
     notifications: { desktop: desktopEnabled },

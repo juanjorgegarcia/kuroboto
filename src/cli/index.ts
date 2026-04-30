@@ -212,7 +212,8 @@ sleeping
   .option('--plan <file>', 'path to a plan markdown file (mutually exclusive with --prompt)')
   .option('--repo <path>', 'repo to operate on (default: cwd)')
   .option('--max <duration>', 'max duration like 2h, 30m (default: policy.sleepMaxDurationMs)')
-  .action(async (opts: { prompt?: string; plan?: string; repo?: string; max?: string }) => {
+  .option('--model <name>', `claude model: 'sonnet' (default, cheaper) or 'opus' (override)`)
+  .action(async (opts: { prompt?: string; plan?: string; repo?: string; max?: string; model?: string }) => {
     try {
       await sleepingStartCommand(opts);
     } catch (e) {

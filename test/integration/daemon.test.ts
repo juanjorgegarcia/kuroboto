@@ -69,6 +69,7 @@ function makeContext(overrides: Overrides = {}): {
     removeWorktree: async () => {},
     onSuccess: async () => {},
     maxConcurrent: 3,
+    defaultModel: 'sonnet',
   });
   const injectClients = new InjectClients();
   const ctx: DaemonContext = {

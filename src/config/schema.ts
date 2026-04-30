@@ -37,6 +37,11 @@ export const PolicyConfig = z.object({
   sleepMaxDurationMs: z.number().int().min(60_000).default(8 * 60 * 60 * 1000),
   sleepWorktreeDir: z.string().default('~/.kuroboto/worktrees'),
   maxConcurrentSleeps: z.number().int().min(1).default(6),
+  // Model used by autonomous sleep claude spawns. Sonnet is the default
+  // because spec-driven sleep work is mostly mechanical execution; opus
+  // costs ~5x for a marginal quality bump on this workload. Override via
+  // `kuroboto sleeping start --model opus` for genuinely complex specs.
+  sleepModel: z.enum(['sonnet', 'opus']).default('sonnet'),
   failOpen: z.boolean(),
 });
 

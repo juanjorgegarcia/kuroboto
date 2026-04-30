@@ -63,6 +63,7 @@ function makeDeps(opts: { maxConcurrent?: number } = {}): { deps: SleepingDeps; 
     },
     onSuccess: vi.fn(async (_session) => {}),
     maxConcurrent: opts.maxConcurrent ?? 3,
+    defaultModel: 'sonnet' as const,
   };
   return { deps, state };
 }
@@ -325,6 +326,33 @@ describe('SleepingOrchestrator', () => {
     const pIdx = args.indexOf('-p');
     expect(flagIdx).toBeGreaterThanOrEqual(0);
     expect(pIdx).toBeGreaterThan(flagIdx);
+  });
+
+  it('uses defaultModel when start request omits model', async () => {
+    const { deps } = makeDeps();
+    const orch = new SleepingOrchestrator(deps);
+    const spawnSpy = vi.spyOn(deps, 'spawn');
+    await orch.start({ repo: '/x', prompt: 'p', workRoot: '/y', maxDurationMs: 60_000 });
+    const args = spawnSpy.mock.calls[0][1];
+    const modelIdx = args.indexOf('--model');
+    expect(modelIdx).toBeGreaterThanOrEqual(0);
+    expect(args[modelIdx + 1]).toBe('sonnet');
+  });
+
+  it('honors per-invocation model override', async () => {
+    const { deps } = makeDeps();
+    const orch = new SleepingOrchestrator(deps);
+    const spawnSpy = vi.spyOn(deps, 'spawn');
+    await orch.start({
+      repo: '/x',
+      prompt: 'p',
+      workRoot: '/y',
+      maxDurationMs: 60_000,
+      model: 'opus',
+    });
+    const args = spawnSpy.mock.calls[0][1];
+    const modelIdx = args.indexOf('--model');
+    expect(args[modelIdx + 1]).toBe('opus');
   });
 
   it('PLAN_INTRO carries the [[KUROBOTO]] marker protocol (Spec J3)', async () => {
