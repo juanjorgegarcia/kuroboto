@@ -109,13 +109,43 @@ describe('daemon HTTP', () => {
     ({ ctx, channel } = makeContext());
   });
 
-  it('GET /v1/health is open and reports mode + counters', async () => {
+  it('GET /v1/health is open — liveness only (ok + uptimeSec)', async () => {
     const res = await request(createServer(ctx)).get('/v1/health');
     expect(res.status).toBe(200);
     expect(res.body.ok).toBe(true);
-    expect(res.body.mode).toBe('here');
-    expect(res.body.pending).toBe(0);
-    expect(res.body.pendingNotifications).toBe(0);
+    expect(typeof res.body.uptimeSec).toBe('number');
+    // mode/pending/gaming moved to /v1/status (M3 breaking change)
+    expect(res.body.mode).toBeUndefined();
+    expect(res.body.pending).toBeUndefined();
+  });
+
+  it('GET /v1/status requires auth', async () => {
+    const res = await request(createServer(ctx)).get('/v1/status');
+    expect(res.status).toBe(401);
+  });
+
+  it('GET /v1/status returns full daemon state shape', async () => {
+    const res = await request(createServer(ctx))
+      .get('/v1/status')
+      .set('X-Kuroboto-Token', TEST_TOKEN);
+    expect(res.status).toBe(200);
+    const b = res.body as Record<string, unknown>;
+    expect(b.daemon).toMatchObject({ pid: expect.any(Number), uptimeSec: expect.any(Number), startedAt: expect.any(String), hostname: 'test-host', port: 47891 });
+    expect(b.pending).toMatchObject({ permissions: 0, notifications: 0, replies: 0 });
+    expect(b.mode).toBe('here');
+    expect(b.gaming).toMatchObject({ active: false, until: null });
+    expect((b.sleeping as Record<string, unknown>).active).toEqual([]);
+    expect(Array.isArray(b.injectClients)).toBe(true);
+    expect(b.topics).toMatchObject({ forumMode: false, count: 0 });
+  });
+
+  it('GET /v1/status reflects gaming armed state', async () => {
+    ctx.state.gaming.arm();
+    const res = await request(createServer(ctx))
+      .get('/v1/status')
+      .set('X-Kuroboto-Token', TEST_TOKEN);
+    expect(res.status).toBe(200);
+    expect((res.body as Record<string, unknown>).gaming).toMatchObject({ active: true });
   });
 
   it('rejects requests without auth token (401)', async () => {

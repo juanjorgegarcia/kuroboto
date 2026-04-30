@@ -5,6 +5,18 @@ import path from 'node:path';
 import { spawn } from 'node:child_process';
 import { captureIO, stubFetch, jsonResponse, TEST_CONFIG } from '../../helpers/cliHarness.js';
 
+function minimalStatusData() {
+  return {
+    daemon: { pid: 1, uptimeSec: 5, startedAt: new Date().toISOString(), hostname: 'test', port: 47891 },
+    pending: { permissions: 0, notifications: 0, replies: 0 },
+    mode: 'here',
+    gaming: { active: false, until: null },
+    sleeping: { active: [], capacity: 6 },
+    injectClients: [],
+    topics: { forumMode: false, count: 0 },
+  };
+}
+
 let tmpDir: string;
 
 vi.mock('../../../src/config/paths.js', async (importOriginal) => {
@@ -56,7 +68,7 @@ function spawnIdleNode(): { pid: number; close: () => void } {
 
 describe('cli/status — watchdog awareness', () => {
   it('shows both watchdog and daemon as alive when both PID files reference live procs', async () => {
-    stubFetch(() => jsonResponse({ ok: true, uptimeSec: 5, pending: 0 }));
+    stubFetch(() => jsonResponse(minimalStatusData()));
     const io = captureIO();
     const watchdog = spawnIdleNode();
     const daemon = spawnIdleNode();
@@ -79,7 +91,7 @@ describe('cli/status — watchdog awareness', () => {
   });
 
   it('flags split-brain when the watchdog PID is stale but the daemon is alive', async () => {
-    stubFetch(() => jsonResponse({ ok: true, uptimeSec: 5, pending: 0 }));
+    stubFetch(() => jsonResponse(minimalStatusData()));
     const io = captureIO();
     const daemon = spawnIdleNode();
     try {
@@ -103,7 +115,7 @@ describe('cli/status — watchdog awareness', () => {
   });
 
   it('shows daemon-only when no watchdog PID file exists (legacy / --no-watchdog)', async () => {
-    stubFetch(() => jsonResponse({ ok: true, uptimeSec: 5, pending: 0 }));
+    stubFetch(() => jsonResponse(minimalStatusData()));
     const io = captureIO();
     const daemon = spawnIdleNode();
     try {
@@ -114,7 +126,7 @@ describe('cli/status — watchdog awareness', () => {
       await statusCommand();
 
       const out = io.out();
-      expect(out).toContain('watchdog: (none)');
+      expect(out).not.toContain('watchdog:');
       expect(out).toMatch(new RegExp(`daemon: alive \\(PID=${daemon.pid}\\)`));
       expect(out).not.toContain('split-brain');
     } finally {

@@ -97,6 +97,13 @@ export class TelegramChannel implements Channel {
     this.handlers[event].push(handler as never);
   }
 
+  topicStats(): { forumMode: boolean; count: number } {
+    return {
+      forumMode: this.topicManager?.forumMode ?? false,
+      count: this.topicManager?.size() ?? 0,
+    };
+  }
+
   /**
    * Resolve the routing context to a thread id, run `send`, and on a
    * "message thread not found" 400 — meaning the topic was deleted in
