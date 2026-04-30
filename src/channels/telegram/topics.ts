@@ -168,6 +168,16 @@ export class TopicManager {
     return this.cache.get(key);
   }
 
+  /** Number of topic keys currently in cache. Used by /v1/status. */
+  size(): number {
+    return this.cache.size;
+  }
+
+  /** Whether forum mode is enabled on this manager instance. */
+  get forumMode(): boolean {
+    return this.opts.forumMode;
+  }
+
   private async flushToDisk(): Promise<void> {
     const obj: Record<string, number> = {};
     for (const [k, v] of this.cache) obj[k] = v;

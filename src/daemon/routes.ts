@@ -44,6 +44,33 @@ export function registerRoutes(app: Express, ctx: DaemonContext): void {
     });
   });
 
+  app.get('/v1/status', (_req, res) => {
+    const now = Date.now();
+    const response: Record<string, unknown> = {
+      daemon: {
+        pid: process.pid,
+        uptimeSec: Math.floor((now - ctx.startedAt) / 1000),
+        startedAt: new Date(ctx.startedAt).toISOString(),
+        hostname: ctx.hostname,
+        port: ctx.config.daemon.port,
+      },
+      pending: {
+        permissions: ctx.pending.size(),
+        notifications: ctx.pendingNotifications.size(),
+        replies: ctx.pendingReplies.size(),
+      },
+      mode: ctx.state.mode,
+      gaming: ctx.state.gaming.snapshot(),
+      sleeping: ctx.state.sleeping.snapshot(),
+      injectClients: ctx.injectClients.list(),
+    };
+    if (ctx.config.channel.type === 'telegram') {
+      const stats = ctx.channel.topicStats?.();
+      response.topics = stats ?? { forumMode: ctx.config.channel.forumMode, count: 0 };
+    }
+    res.json(response);
+  });
+
   app.get('/v1/mode', (_req, res) => {
     res.json({ mode: ctx.state.mode });
   });

@@ -66,4 +66,6 @@ export interface Channel {
   clearTopics?(opts: { keys?: string[]; all?: boolean; except?: string[]; dryRun?: boolean }): Promise<ClearTopicsResult>;
   /** Delete the last N outbound messages tracked by the channel. */
   clearLastMessages?(n: number, opts?: { dryRun?: boolean }): Promise<ClearMessagesResult>;
+  /** Return forum topic stats for status display. Absent on non-Telegram channels. */
+  topicStats?(): { forumMode: boolean; count: number };
 }

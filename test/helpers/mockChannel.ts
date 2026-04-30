@@ -75,6 +75,10 @@ export class MockChannel implements Channel {
     this.handlers[event].push(handler);
   }
 
+  topicStats(): { forumMode: boolean; count: number } {
+    return { forumMode: false, count: 0 };
+  }
+
   /** Stub config — set by tests to make clearTopics / clearLastMessages testable. */
   public clearTopicsImpl: ((opts: { keys?: string[]; all?: boolean; except?: string[]; dryRun?: boolean }) => Promise<ClearTopicsResult>) | undefined;
   public clearLastMessagesImpl: ((n: number, opts?: { dryRun?: boolean }) => Promise<ClearMessagesResult>) | undefined;
