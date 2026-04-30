@@ -10,6 +10,11 @@ import { TelegramApi } from '../channels/telegram/api.js';
 import { TopicManager, type TopicAuditEvent } from '../channels/telegram/topics.js';
 import { validateBotPermissions } from '../channels/telegram/forumValidation.js';
 import { createLogger, type Logger } from '../core/logger.js';
+import {
+  resolveClaudeExecutable,
+  requiresShellOnWindows,
+  ClaudeCmdInstallUnsupportedError,
+} from '../core/claudeExe.js';
 import { CONFIG_DIR, LOG_DIR, PID_FILE, DAEMON_SENTINEL_FILE, TOPICS_FILE } from '../config/paths.js';
 import { DaemonError } from '../core/errors.js';
 import { PendingMap } from './pending.js';
@@ -52,14 +57,44 @@ export async function startDaemon(initialConfig: ConfigT): Promise<RunningDaemon
   const injectClients = new InjectClients();
   const initialMode: Mode = await loadMode();
   const gaming = new GamingState();
-  // shell:false so --body markdown passes through verbatim. Node 16+ resolves
-  // .exe (and .cmd) via PATHEXT on Windows when shell:false, so we don't need
-  // to suffix manually.
-  // windowsHide: true suppresses the popup console window when the daemon
-  // (which itself may run detached) spawns child processes on Windows. Without
-  // this, every sleep agent + every gh/git call flickers a console.
-  const claudeSpawn = (cmd: string, args: string[], opts?: SpawnOptions): ReturnType<typeof nodeSpawn> =>
-    nodeSpawn(cmd, args, { ...opts, shell: false, windowsHide: true });
+  // claudeSpawn wraps nodeSpawn with the Windows-specific concerns hidden:
+  //
+  //   1. PATHEXT resolution. spawn('claude', ..., { shell: false }) with
+  //      the npm-distributed Claude Code (which installs as `claude.cmd`)
+  //      fails with ENOENT — node's spawn walks PATHEXT for `.exe` but
+  //      NOT for `.cmd`/`.bat` since the CVE-2024-27980 mitigation in
+  //      18.20.2. We resolve via `where claude` upfront. Resolution is
+  //      hoisted out of the closure so we don't re-run a synchronous
+  //      subprocess on every spawn.
+  //
+  //   2. .cmd execution is unsupported. Going through cmd.exe to launch
+  //      `.cmd` lets it re-parse `& | < > ^` in args AND cannot
+  //      preserve embedded newlines, which kuroboto's sleep prompts
+  //      always have (multi-line markdown specs). Throw upfront with a
+  //      clear message pointing to the binary installer rather than
+  //      pretending it works. Resolution is checked once at startup —
+  //      if Claude isn't installed yet (`where claude` falls back to
+  //      'claude'), we don't error here; the spawn will surface ENOENT
+  //      itself when actually invoked.
+  //
+  //   3. windowsHide: true suppresses the popup console window when the
+  //      daemon (which itself may run detached) spawns child processes
+  //      on Windows.
+  const resolvedClaudeExe = resolveClaudeExecutable();
+  if (requiresShellOnWindows(resolvedClaudeExe)) {
+    logger.warn(
+      `Claude Code resolves to a .cmd install (${resolvedClaudeExe}). ` +
+        `Sleep mode and other daemon-side claude spawns will throw on use; ` +
+        `install Claude Code via the official binary installer to enable them.`,
+    );
+  }
+  const claudeSpawn = (cmd: string, args: string[], opts?: SpawnOptions): ReturnType<typeof nodeSpawn> => {
+    const resolved = cmd === 'claude' ? resolvedClaudeExe : cmd;
+    if (cmd === 'claude' && requiresShellOnWindows(resolved)) {
+      throw new ClaudeCmdInstallUnsupportedError(resolved);
+    }
+    return nodeSpawn(resolved, args, { ...opts, shell: false, windowsHide: true });
+  };
   const desktopNotifyDep: ((opts: DesktopNotifyOpts) => Promise<void>) | undefined =
     config.notifications.desktop
       ? (opts) =>
