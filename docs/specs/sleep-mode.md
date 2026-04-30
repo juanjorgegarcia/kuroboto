@@ -1,6 +1,6 @@
 # Sleep Mode
 
-> Status: implementing in `feat/sleep-mode`
+> Status: shipped (v0.2). Parallel sessions added later via Spec D — see `parallel-sleeps.md`. Sections below describing single-session behavior (Max one, GET returns object, 409 on second start) are superseded by that spec; the daemon now holds up to `policy.maxConcurrentSleeps` sessions (default 6) and 409 became 429 on capacity.
 
 ## Problem
 
