@@ -2,11 +2,11 @@ import http from 'node:http';
 import fsp from 'node:fs/promises';
 import fs from 'node:fs';
 import path from 'node:path';
-import { spawnSync } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
 import chalk from 'chalk';
 import { loadConfig } from '../config/load.js';
 import { DAEMON_SENTINEL_FILE } from '../config/paths.js';
+import { resolveClaudeExecutable } from '../core/claudeExe.js';
 
 export interface DaemonSentinel {
   pid: number;
@@ -376,29 +376,6 @@ export async function runInjectClient(opts: ClaudeRunOpts): Promise<RunResult> {
   await daemon.deregister(slug);
 
   return { exitCode };
-}
-
-/**
- * Resolve the `claude` executable path. On Windows, `node-pty` (via ConPTY +
- * CreateProcess) does NOT walk PATHEXT, so passing `'claude'` fails with
- * ENOENT when the install is `claude.cmd` / `claude.bat`. Use `where` to
- * resolve to the absolute path. On Unix, `claude` works as-is.
- *
- * Falls back to `'claude'` on resolution failure — the spawn will then error
- * with a clear message.
- */
-function resolveClaudeExecutable(): string {
-  if (process.platform !== 'win32') return 'claude';
-  try {
-    const r = spawnSync('where', ['claude'], { encoding: 'utf-8', windowsHide: true });
-    if (r.status === 0 && r.stdout) {
-      const first = r.stdout.split(/\r?\n/)[0]?.trim();
-      if (first) return first;
-    }
-  } catch {
-    // ignore
-  }
-  return 'claude';
 }
 
 async function loadNodePty(): Promise<NodePtyLike | null> {

@@ -10,6 +10,7 @@ import { TelegramApi } from '../channels/telegram/api.js';
 import { TopicManager, type TopicAuditEvent } from '../channels/telegram/topics.js';
 import { validateBotPermissions } from '../channels/telegram/forumValidation.js';
 import { createLogger, type Logger } from '../core/logger.js';
+import { resolveClaudeExecutable, requiresShellOnWindows } from '../core/claudeExe.js';
 import { CONFIG_DIR, LOG_DIR, PID_FILE, DAEMON_SENTINEL_FILE, TOPICS_FILE } from '../config/paths.js';
 import { DaemonError } from '../core/errors.js';
 import { PendingMap } from './pending.js';
@@ -52,14 +53,29 @@ export async function startDaemon(initialConfig: ConfigT): Promise<RunningDaemon
   const injectClients = new InjectClients();
   const initialMode: Mode = await loadMode();
   const gaming = new GamingState();
-  // shell:false so --body markdown passes through verbatim. Node 16+ resolves
-  // .exe (and .cmd) via PATHEXT on Windows when shell:false, so we don't need
-  // to suffix manually.
-  // windowsHide: true suppresses the popup console window when the daemon
-  // (which itself may run detached) spawns child processes on Windows. Without
-  // this, every sleep agent + every gh/git call flickers a console.
-  const claudeSpawn = (cmd: string, args: string[], opts?: SpawnOptions): ReturnType<typeof nodeSpawn> =>
-    nodeSpawn(cmd, args, { ...opts, shell: false, windowsHide: true });
+  // claudeSpawn wraps nodeSpawn with two Windows-specific concerns hidden:
+  //
+  //   1. PATHEXT resolution. Calling spawn('claude', ..., { shell: false })
+  //      with the npm-distributed Claude Code (which installs as
+  //      `claude.cmd` on Windows) fails with ENOENT — node's spawn does
+  //      walk PATHEXT for `.exe` but NOT for `.cmd`/`.bat` since the
+  //      CVE-2024-27980 mitigation in 18.20.2. We resolve the absolute
+  //      path upfront via `where claude` so the bare-cmd case still works.
+  //
+  //   2. .cmd/.bat shell-mode requirement. Once resolved, if the path
+  //      ends in `.cmd`/`.bat`, spawn must run with `shell: true` —
+  //      same CVE mitigation. For `.exe` and POSIX, `shell: false` keeps
+  //      argv flat (so e.g. --body markdown passes through verbatim).
+  //
+  //   3. windowsHide: true suppresses the popup console window when the
+  //      daemon (which itself may run detached) spawns child processes
+  //      on Windows. Without this, every sleep agent + every gh/git call
+  //      flickers a console.
+  const claudeSpawn = (cmd: string, args: string[], opts?: SpawnOptions): ReturnType<typeof nodeSpawn> => {
+    const resolved = cmd === 'claude' ? resolveClaudeExecutable() : cmd;
+    const useShell = cmd === 'claude' && requiresShellOnWindows(resolved);
+    return nodeSpawn(resolved, args, { ...opts, shell: useShell, windowsHide: true });
+  };
   const desktopNotifyDep: ((opts: DesktopNotifyOpts) => Promise<void>) | undefined =
     config.notifications.desktop
       ? (opts) =>
