@@ -10,7 +10,11 @@ import { TelegramApi } from '../channels/telegram/api.js';
 import { TopicManager, type TopicAuditEvent } from '../channels/telegram/topics.js';
 import { validateBotPermissions } from '../channels/telegram/forumValidation.js';
 import { createLogger, type Logger } from '../core/logger.js';
-import { resolveClaudeExecutable, requiresShellOnWindows } from '../core/claudeExe.js';
+import {
+  resolveClaudeExecutable,
+  requiresShellOnWindows,
+  ClaudeCmdInstallUnsupportedError,
+} from '../core/claudeExe.js';
 import { CONFIG_DIR, LOG_DIR, PID_FILE, DAEMON_SENTINEL_FILE, TOPICS_FILE } from '../config/paths.js';
 import { DaemonError } from '../core/errors.js';
 import { PendingMap } from './pending.js';
@@ -53,28 +57,43 @@ export async function startDaemon(initialConfig: ConfigT): Promise<RunningDaemon
   const injectClients = new InjectClients();
   const initialMode: Mode = await loadMode();
   const gaming = new GamingState();
-  // claudeSpawn wraps nodeSpawn with two Windows-specific concerns hidden:
+  // claudeSpawn wraps nodeSpawn with the Windows-specific concerns hidden:
   //
-  //   1. PATHEXT resolution. Calling spawn('claude', ..., { shell: false })
-  //      with the npm-distributed Claude Code (which installs as
-  //      `claude.cmd` on Windows) fails with ENOENT — node's spawn does
-  //      walk PATHEXT for `.exe` but NOT for `.cmd`/`.bat` since the
-  //      CVE-2024-27980 mitigation in 18.20.2. We resolve the absolute
-  //      path upfront via `where claude` so the bare-cmd case still works.
+  //   1. PATHEXT resolution. spawn('claude', ..., { shell: false }) with
+  //      the npm-distributed Claude Code (which installs as `claude.cmd`)
+  //      fails with ENOENT — node's spawn walks PATHEXT for `.exe` but
+  //      NOT for `.cmd`/`.bat` since the CVE-2024-27980 mitigation in
+  //      18.20.2. We resolve via `where claude` upfront. Resolution is
+  //      hoisted out of the closure so we don't re-run a synchronous
+  //      subprocess on every spawn.
   //
-  //   2. .cmd/.bat shell-mode requirement. Once resolved, if the path
-  //      ends in `.cmd`/`.bat`, spawn must run with `shell: true` —
-  //      same CVE mitigation. For `.exe` and POSIX, `shell: false` keeps
-  //      argv flat (so e.g. --body markdown passes through verbatim).
+  //   2. .cmd execution is unsupported. Going through cmd.exe to launch
+  //      `.cmd` lets it re-parse `& | < > ^` in args AND cannot
+  //      preserve embedded newlines, which kuroboto's sleep prompts
+  //      always have (multi-line markdown specs). Throw upfront with a
+  //      clear message pointing to the binary installer rather than
+  //      pretending it works. Resolution is checked once at startup —
+  //      if Claude isn't installed yet (`where claude` falls back to
+  //      'claude'), we don't error here; the spawn will surface ENOENT
+  //      itself when actually invoked.
   //
   //   3. windowsHide: true suppresses the popup console window when the
   //      daemon (which itself may run detached) spawns child processes
-  //      on Windows. Without this, every sleep agent + every gh/git call
-  //      flickers a console.
+  //      on Windows.
+  const resolvedClaudeExe = resolveClaudeExecutable();
+  if (requiresShellOnWindows(resolvedClaudeExe)) {
+    logger.warn(
+      `Claude Code resolves to a .cmd install (${resolvedClaudeExe}). ` +
+        `Sleep mode and other daemon-side claude spawns will throw on use; ` +
+        `install Claude Code via the official binary installer to enable them.`,
+    );
+  }
   const claudeSpawn = (cmd: string, args: string[], opts?: SpawnOptions): ReturnType<typeof nodeSpawn> => {
-    const resolved = cmd === 'claude' ? resolveClaudeExecutable() : cmd;
-    const useShell = cmd === 'claude' && requiresShellOnWindows(resolved);
-    return nodeSpawn(resolved, args, { ...opts, shell: useShell, windowsHide: true });
+    const resolved = cmd === 'claude' ? resolvedClaudeExe : cmd;
+    if (cmd === 'claude' && requiresShellOnWindows(resolved)) {
+      throw new ClaudeCmdInstallUnsupportedError(resolved);
+    }
+    return nodeSpawn(resolved, args, { ...opts, shell: false, windowsHide: true });
   };
   const desktopNotifyDep: ((opts: DesktopNotifyOpts) => Promise<void>) | undefined =
     config.notifications.desktop

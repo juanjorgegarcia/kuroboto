@@ -1,10 +1,32 @@
 /**
- * Coverage for the Windows-specific spawn-resolution helpers. The real
- * `where claude` lookup can't be deterministically tested cross-runner, so
- * the resolution path is exercised only as far as its branching contract.
+ * Coverage for Windows-specific spawn-resolution helpers. `isCmdOrBat` is
+ * pure and runs on every OS so the .cmd-handling logic is exercised on
+ * the full CI matrix; the platform-conditional `requiresShellOnWindows`
+ * and the `where claude` resolver get the conditional treatment.
  */
 import { describe, it, expect } from 'vitest';
-import { resolveClaudeExecutable, requiresShellOnWindows } from '../../src/core/claudeExe.js';
+import {
+  resolveClaudeExecutable,
+  requiresShellOnWindows,
+  isCmdOrBat,
+  ClaudeCmdInstallUnsupportedError,
+} from '../../src/core/claudeExe.js';
+
+describe('isCmdOrBat (pure suffix check, OS-agnostic)', () => {
+  it('returns true for .cmd / .CMD / .bat / .BAT regardless of OS', () => {
+    expect(isCmdOrBat('C:\\Users\\x\\AppData\\Roaming\\npm\\claude.cmd')).toBe(true);
+    expect(isCmdOrBat('C:\\path\\claude.CMD')).toBe(true);
+    expect(isCmdOrBat('C:\\path\\claude.bat')).toBe(true);
+    expect(isCmdOrBat('/posix/style/claude.cmd')).toBe(true); // suffix-based, not OS-based
+  });
+
+  it('returns false for .exe / extension-less / unrelated suffixes', () => {
+    expect(isCmdOrBat('C:\\Users\\x\\.local\\bin\\claude.exe')).toBe(false);
+    expect(isCmdOrBat('claude')).toBe(false);
+    expect(isCmdOrBat('/usr/local/bin/claude')).toBe(false);
+    expect(isCmdOrBat('claude.cmd.bak')).toBe(false); // not exact suffix
+  });
+});
 
 describe('resolveClaudeExecutable', () => {
   it("returns 'claude' verbatim on POSIX", () => {
@@ -15,14 +37,12 @@ describe('resolveClaudeExecutable', () => {
   it('returns either an absolute path or fallback string on Windows', () => {
     if (process.platform !== 'win32') return; // skip on POSIX
     const result = resolveClaudeExecutable();
-    // Either a real where-claude hit (absolute path) or the fallback.
-    // Both shapes are valid; what we assert is the function never throws.
     expect(typeof result).toBe('string');
     expect(result.length).toBeGreaterThan(0);
   });
 });
 
-describe('requiresShellOnWindows', () => {
+describe('requiresShellOnWindows (platform-conditional wrapper)', () => {
   it('always returns false on POSIX regardless of extension', () => {
     if (process.platform === 'win32') return;
     expect(requiresShellOnWindows('claude')).toBe(false);
@@ -30,16 +50,19 @@ describe('requiresShellOnWindows', () => {
     expect(requiresShellOnWindows('C:\\path\\to\\claude.cmd')).toBe(false);
   });
 
-  it('returns true for .cmd / .bat on Windows', () => {
+  it('matches isCmdOrBat on Windows', () => {
     if (process.platform !== 'win32') return;
-    expect(requiresShellOnWindows('C:\\Users\\x\\AppData\\Roaming\\npm\\claude.cmd')).toBe(true);
-    expect(requiresShellOnWindows('C:\\path\\claude.CMD')).toBe(true); // case-insensitive
-    expect(requiresShellOnWindows('C:\\path\\claude.bat')).toBe(true);
+    expect(requiresShellOnWindows('C:\\path\\claude.cmd')).toBe(true);
+    expect(requiresShellOnWindows('C:\\path\\claude.exe')).toBe(false);
   });
+});
 
-  it('returns false for .exe on Windows (binary install)', () => {
-    if (process.platform !== 'win32') return;
-    expect(requiresShellOnWindows('C:\\Users\\x\\.local\\bin\\claude.exe')).toBe(false);
-    expect(requiresShellOnWindows('claude')).toBe(false); // bare name → no extension
+describe('ClaudeCmdInstallUnsupportedError', () => {
+  it('carries the resolved path and a message pointing at the binary installer', () => {
+    const err = new ClaudeCmdInstallUnsupportedError('C:\\Users\\x\\AppData\\Roaming\\npm\\claude.cmd');
+    expect(err.resolvedPath).toBe('C:\\Users\\x\\AppData\\Roaming\\npm\\claude.cmd');
+    expect(err.message).toContain('claude.cmd');
+    expect(err.message).toContain('binary installer');
+    expect(err.name).toBe('ClaudeCmdInstallUnsupportedError');
   });
 });

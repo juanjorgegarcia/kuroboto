@@ -35,6 +35,15 @@ export function resolveClaudeExecutable(): string {
 }
 
 /**
+ * Pure suffix check — no platform branch. Useful in tests so the
+ * .cmd-handling logic is exercised on every runner regardless of OS.
+ */
+export function isCmdOrBat(p: string): boolean {
+  const lower = p.toLowerCase();
+  return lower.endsWith('.cmd') || lower.endsWith('.bat');
+}
+
+/**
  * `child_process.spawn` with `shell: false` cannot launch `.cmd`/`.bat`
  * directly on Node ≥ 18.20.2 (CVE-2024-27980). When the resolved
  * executable ends in `.cmd`/`.bat`, callers must pass `shell: true`.
@@ -44,6 +53,30 @@ export function resolveClaudeExecutable(): string {
  */
 export function requiresShellOnWindows(resolvedExe: string): boolean {
   if (process.platform !== 'win32') return false;
-  const lower = resolvedExe.toLowerCase();
-  return lower.endsWith('.cmd') || lower.endsWith('.bat');
+  return isCmdOrBat(resolvedExe);
+}
+
+/**
+ * Thrown by `claudeSpawn` when the resolved Claude executable is `.cmd`
+ * (typical `npm install -g @anthropic-ai/claude-code` install on
+ * Windows). Going through cmd.exe to launch `.cmd` would let it re-parse
+ * `& | < > ^` in args, AND cmd.exe cannot preserve embedded newlines —
+ * which kuroboto's sleep prompts (multi-line markdown specs) always
+ * have. There is no robust escape: writing the prompt to a temp file
+ * and switching the spawn signature is doable but invasive enough to
+ * warrant its own spec. Until then, fail loud and point to the binary
+ * installer (which produces `.exe` and works on `shell: false`).
+ */
+export class ClaudeCmdInstallUnsupportedError extends Error {
+  constructor(public readonly resolvedPath: string) {
+    super(
+      `kuroboto cannot launch the npm-installed Claude Code on Windows reliably ` +
+        `(\`${resolvedPath}\` ends in .cmd, which cmd.exe parses with metachar + newline ` +
+        `quirks that break multi-line spec dispatches). ` +
+        `Workaround: install Claude Code via the official binary installer instead — ` +
+        `it produces \`claude.exe\` which kuroboto launches with shell:false directly. ` +
+        `See https://github.com/anthropics/claude-code for binary download links.`,
+    );
+    this.name = 'ClaudeCmdInstallUnsupportedError';
+  }
 }
