@@ -1,5 +1,29 @@
 # Changelog
 
+## [0.3.0](https://github.com/juanjorgegarcia/kuroboto/compare/v0.2.0...v0.3.0) (2026-04-30)
+
+
+### Features
+
+* **status:** daemon health UI — enrich kuroboto status (Spec H) ([#32](https://github.com/juanjorgegarcia/kuroboto/issues/32)) ([6afa1bb](https://github.com/juanjorgegarcia/kuroboto/commit/6afa1bb04c348f86f07d50716b420f81774adb0e))
+
+
+### Bug Fixes
+
+* address PR [#29](https://github.com/juanjorgegarcia/kuroboto/issues/29) review findings + sleep model default + CI mention workflow ([#30](https://github.com/juanjorgegarcia/kuroboto/issues/30)) ([ee34f36](https://github.com/juanjorgegarcia/kuroboto/commit/ee34f36fdfb72852aa489eb3b2fb5864d6c39439))
+* **cli:** sleeping cleanup detects merged sleeps (drop bogus --head filter) ([#28](https://github.com/juanjorgegarcia/kuroboto/issues/28)) ([eb2383e](https://github.com/juanjorgegarcia/kuroboto/commit/eb2383efec1af0b7ec682f2bb0888adf500412eb))
+* **cli:** surface daemon startup errors from `start --detach` ([#23](https://github.com/juanjorgegarcia/kuroboto/issues/23)) ([ae00c51](https://github.com/juanjorgegarcia/kuroboto/commit/ae00c5114c4538fc893216796fffb05ca1ee0993))
+* **daemon:** drop per-tool FYI in gaming mode (crashes Telegram) ([218fae3](https://github.com/juanjorgegarcia/kuroboto/commit/218fae327b86c7eda7c6c6c58317fd8cdb5480ac))
+* **daemon:** fall back to pty when tmux strategy is configured but unavailable ([#24](https://github.com/juanjorgegarcia/kuroboto/issues/24)) ([772f236](https://github.com/juanjorgegarcia/kuroboto/commit/772f23627e7e4dff1d852c7908016e351484c302))
+* **daemon:** persist crash details on unhandled exception/rejection ([#26](https://github.com/juanjorgegarcia/kuroboto/issues/26)) ([84950d7](https://github.com/juanjorgegarcia/kuroboto/commit/84950d70f979428e7e9ed584e69ea475c365cf6a))
+* **windows:** resolve claude.cmd in daemon claudeSpawn for npm installs ([#31](https://github.com/juanjorgegarcia/kuroboto/issues/31)) ([8e4a593](https://github.com/juanjorgegarcia/kuroboto/commit/8e4a59349a3dc6eed0cf2e1ea6fcaa86ecebb731))
+
+
+### Documentation
+
+* **specs:** cleanup --head prefix bug fix ([#27](https://github.com/juanjorgegarcia/kuroboto/issues/27)) ([2c6730c](https://github.com/juanjorgegarcia/kuroboto/commit/2c6730cab0a25ed522b09db059864384e620852f))
+* **specs:** cross-model PR review delta study (Spec R) ([39db423](https://github.com/juanjorgegarcia/kuroboto/commit/39db4233c69761dbd8f171a5d537032b99ede9c6))
+
 ## [0.2.0](https://github.com/juanjorgegarcia/kuroboto/compare/v0.1.0...v0.2.0) (2026-04-29)
 
 
