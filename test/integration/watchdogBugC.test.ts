@@ -195,18 +195,22 @@ setTimeout(() => { throw new Error('SIMULATED_DAEMON_CRASH'); }, 1200);
     // then exits — forces the watchdog into the runtime-crash respawn path
     // repeatedly. Default policy budget is 5 respawns in a 60s window; the
     // 6th attempt should be refused and onTerminal('gave-up') fires.
-    // exitAfterMs needs to be > HEALTH_POLL_INTERVAL_MS (250ms) so the
-    // watchdog gets at least one /health 200 before the child exits.
+    // exitAfterMs needs comfortable margin above HEALTH_POLL_INTERVAL_MS
+    // (250ms) plus listen()+first round-trip time. 600ms was tight enough
+    // that macOS CI runners flaked: the first cycle occasionally exited
+    // before everHealthy flipped true, dropping into 'startup-failure'
+    // instead of the 'gave-up' path this test exercises. 1200ms gives
+    // ~4 health probes per cycle.
     const scriptPath = path.join(tmpDir, 'daemon-flapping.mjs');
     await fsp.writeFile(
       scriptPath,
-      mockDaemonScript({ port: chosenPort, exitAfterMs: 600, exitCode: 1 }),
+      mockDaemonScript({ port: chosenPort, exitAfterMs: 1200, exitCode: 1 }),
     );
 
     // Inject a fast sleep that immediately resolves — backoff ladder is
     // 1+2+4+8+16=31s of real waits which would be cripplingly slow in a
     // test. The 60s window check uses Date.now(), but since each respawn
-    // also takes the daemon's exitAfterMs (~600ms) of real time, the
+    // also takes the daemon's exitAfterMs (~1200ms) of real time, the
     // window has plenty of room for the 5+ respawns.
     let terminalReason: string | null = null;
     const respawnPids: Array<number | undefined> = [];
