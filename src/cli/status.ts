@@ -1,63 +1,107 @@
 import fsp from 'node:fs/promises';
 import path from 'node:path';
 import os from 'node:os';
-import chalk from 'chalk';
-import { readPid, isProcessAlive, checkHealth } from './util.js';
+import { readPid, isProcessAlive, fetchStatus } from './util.js';
 import { CONFIG_FILE, WATCHDOG_PID_FILE } from '../config/paths.js';
 import { loadMode } from '../daemon/state.js';
+import {
+  formatHumanReadable,
+  formatJson,
+  formatQuiet,
+  type MergedStatus,
+} from './statusFormat.js';
 
-export async function statusCommand(): Promise<void> {
-  console.log(chalk.bold('kuroboto status'));
-  console.log(`  config: ${CONFIG_FILE}`);
+interface StatusOptions {
+  json?: boolean;
+  watch?: number | false;
+  quiet?: boolean;
+}
 
-  const watchdogPid = await readWatchdogPidFile();
-  const watchdogAlive = watchdogPid !== null && isProcessAlive(watchdogPid);
-  const watchdogLabel =
-    watchdogPid === null
-      ? chalk.dim('(none)')
-      : watchdogAlive
-        ? chalk.green(`alive (PID=${watchdogPid})`)
-        : chalk.red(`dead (stale PID=${watchdogPid})`);
-  console.log(`  watchdog: ${watchdogLabel}`);
+export async function statusCommand(opts: StatusOptions = {}): Promise<void> {
+  if (opts.watch !== undefined && opts.watch !== false) {
+    const interval = opts.watch;
+    if (typeof interval !== 'number' || isNaN(interval) || interval < 0.5) {
+      process.stderr.write('error: --watch interval must be ≥ 0.5s\n');
+      process.exit(2);
+    }
+    await runWatch(interval, opts);
+    return;
+  }
 
-  const pid = await readPid();
-  const alive = pid !== null && isProcessAlive(pid);
-  const pidLabel =
-    pid === null
-      ? chalk.dim('(none)')
-      : alive
-        ? chalk.green(`alive (PID=${pid})`)
-        : chalk.red(`dead (stale PID=${pid})`);
-  console.log(`  daemon: ${pidLabel}`);
+  const merged = await gatherStatus();
+  const exitCode = resolveExitCode(merged, opts);
 
-  // Split-brain: watchdog dead but daemon alive — happens if the watchdog
-  // was killed by hand. The daemon will keep running but no one is
-  // supervising it, so the next crash falls back to the original Bug C.
-  if (watchdogPid !== null && !watchdogAlive && alive) {
-    console.log(
-      `  ${chalk.yellow('!! split-brain: watchdog gone but daemon still up — kuroboto stop && kuroboto start --detach to recover')}`,
+  if (opts.quiet) {
+    const { text } = formatQuiet(merged);
+    process.stdout.write(text + '\n');
+  } else if (opts.json) {
+    process.stdout.write(formatJson(merged) + '\n');
+  } else {
+    console.log(formatHumanReadable(merged));
+  }
+
+  if (exitCode !== 0) process.exit(exitCode);
+}
+
+async function runWatch(intervalSec: number, opts: StatusOptions): Promise<void> {
+  const render = async (): Promise<void> => {
+    process.stdout.write('\x1B[2J\x1B[0f');
+    const now = new Date().toLocaleTimeString();
+    process.stdout.write(
+      `(live, refresh ${intervalSec}s, Ctrl+C pra sair) — ${now}\n`,
     );
-  }
+    const merged = await gatherStatus();
+    if (opts.json) {
+      process.stdout.write(formatJson(merged) + '\n');
+    } else {
+      console.log(formatHumanReadable(merged));
+    }
+  };
 
-  const health = await checkHealth();
-  if (health.ok) {
-    console.log(`  health: ${chalk.green('ok')} uptime=${health.data.uptimeSec}s pending=${health.data.pending}`);
-  } else {
-    console.log(`  health: ${chalk.red('unreachable')} ${chalk.dim(health.error)}`);
-  }
+  await render();
+  const timer = setInterval(() => {
+    render().catch(() => {});
+  }, intervalSec * 1000);
 
-  const mode = await loadMode();
-  console.log(`  mode: ${chalk.cyan(mode)}`);
+  process.on('SIGINT', () => {
+    clearInterval(timer);
+    process.exit(0);
+  });
+}
 
-  const settingsPath = path.join(os.homedir(), '.claude', 'settings.json');
-  const installed = await detectInstalledHooks(settingsPath);
-  if (installed === null) {
-    console.log(`  hooks: ${chalk.yellow(`(no settings.json at ${settingsPath})`)}`);
-  } else if (installed.length === 0) {
-    console.log(`  hooks: ${chalk.yellow('not installed — run `kuroboto init`')}`);
-  } else {
-    console.log(`  hooks: ${chalk.green(installed.join(', '))}`);
-  }
+async function gatherStatus(): Promise<MergedStatus> {
+  const [watchdogPid, daemonPid, fetchResult, installedHooks, fallbackMode] =
+    await Promise.all([
+      readWatchdogPidFile(),
+      readPid(),
+      fetchStatus(),
+      detectInstalledHooks(path.join(os.homedir(), '.claude', 'settings.json')),
+      loadMode().catch(() => 'here' as const),
+    ]);
+
+  const daemonAlive = daemonPid !== null && isProcessAlive(daemonPid);
+  const watchdog =
+    watchdogPid !== null
+      ? { pid: watchdogPid, alive: isProcessAlive(watchdogPid) }
+      : null;
+  const splitBrain = watchdog !== null && !watchdog.alive && daemonAlive;
+
+  return {
+    configPath: CONFIG_FILE,
+    watchdog,
+    daemonPid,
+    daemonAlive,
+    splitBrain,
+    fetchResult,
+    installedHooks,
+    mode: fallbackMode,
+  };
+}
+
+function resolveExitCode(s: MergedStatus, opts: StatusOptions): number {
+  if (opts.watch !== undefined && opts.watch !== false) return 0;
+  if (!s.daemonAlive || !s.fetchResult.ok) return 1;
+  return 0;
 }
 
 async function readWatchdogPidFile(): Promise<number | null> {
@@ -94,7 +138,8 @@ async function detectInstalledHooks(settingsPath: string): Promise<string[] | nu
     const blocks = hooks[event];
     if (!Array.isArray(blocks)) continue;
     const hasKuroboto = blocks.some((b) =>
-      Array.isArray(b.hooks) && b.hooks.some((h) => typeof h.command === 'string' && h.command.includes('kuroboto')),
+      Array.isArray(b.hooks) &&
+      b.hooks.some((h) => typeof h.command === 'string' && h.command.includes('kuroboto')),
     );
     if (hasKuroboto) found.push(event);
   }

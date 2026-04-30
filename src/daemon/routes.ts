@@ -37,10 +37,6 @@ export function registerRoutes(app: Express, ctx: DaemonContext): void {
     res.json({
       ok: true,
       uptimeSec: Math.floor((Date.now() - ctx.startedAt) / 1000),
-      pending: ctx.pending.size(),
-      pendingNotifications: ctx.pendingNotifications.size(),
-      mode: ctx.state.mode,
-      gaming: ctx.state.gaming.snapshot(),
     });
   });
 

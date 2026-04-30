@@ -97,9 +97,16 @@ program
 program
   .command('status')
   .description('Show daemon, channel, and hook installation state')
-  .action(async () => {
+  .option('--json', 'Machine-readable JSON output', false)
+  .option('--watch [interval]', 'Live-refresh every N seconds (default 1, min 0.5)')
+  .option('--quiet', 'Single-line liveness check; exits 0 (alive) or 1 (dead)', false)
+  .action(async (opts: { json?: boolean; watch?: string | boolean; quiet?: boolean }) => {
     try {
-      await statusCommand();
+      let watchVal: number | false = false;
+      if (opts.watch !== undefined && opts.watch !== false) {
+        watchVal = opts.watch === true ? 1 : parseFloat(String(opts.watch));
+      }
+      await statusCommand({ json: opts.json, watch: watchVal, quiet: opts.quiet });
     } catch (e) {
       console.error(`status failed: ${(e as Error).message}`);
       process.exit(1);

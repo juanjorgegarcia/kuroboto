@@ -1,6 +1,9 @@
 import fsp from 'node:fs/promises';
 import { PID_FILE } from '../config/paths.js';
 import { loadConfig } from '../config/load.js';
+import type {
+  StatusData,
+} from './statusFormat.js';
 
 export async function readPid(): Promise<number | null> {
   try {
@@ -21,12 +24,10 @@ export function isProcessAlive(pid: number): boolean {
   }
 }
 
+/** Narrowed health response — liveness only. Gaming/mode/pending moved to /v1/status. */
 export interface HealthData {
   ok: boolean;
   uptimeSec: number;
-  pending: number;
-  pendingNotifications?: number;
-  mode?: 'here' | 'away';
 }
 
 export type HealthResult =
@@ -56,6 +57,47 @@ export async function checkHealth(timeoutMs = 2_000): Promise<HealthResult> {
   }
 }
 
+export type StatusResult =
+  | { ok: true; data: StatusData }
+  | { ok: false; error: string; errorCode?: string };
+
+export async function fetchStatus(timeoutMs = 3_000): Promise<StatusResult> {
+  let config;
+  try {
+    config = await loadConfig();
+  } catch (e) {
+    return { ok: false, error: (e as Error).message };
+  }
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), timeoutMs);
+  try {
+    const res = await fetch(`http://127.0.0.1:${config.daemon.port}/v1/status`, {
+      signal: ctrl.signal,
+      headers: { 'X-Kuroboto-Token': config.daemon.authToken },
+    });
+    clearTimeout(timer);
+    if (res.status === 401) {
+      return { ok: false, error: 'auth failed (check config token)', errorCode: 'AUTH' };
+    }
+    if (!res.ok) {
+      return { ok: false, error: `HTTP ${res.status}`, errorCode: `HTTP_${res.status}` };
+    }
+    let data: StatusData;
+    try {
+      data = (await res.json()) as StatusData;
+    } catch {
+      return { ok: false, error: 'malformed response from daemon', errorCode: 'MALFORMED' };
+    }
+    return { ok: true, data };
+  } catch (e) {
+    clearTimeout(timer);
+    const err = e as Error & { code?: string };
+    return { ok: false, error: err.message, errorCode: err.code };
+  }
+}
+
 export function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
+
+export { type StatusData };
