@@ -1,0 +1,1620 @@
+{
+  "generated": "2026-05-01T02:32:49.126Z",
+  "source": "eval-v1.json",
+  "totalReviews": 40,
+  "successful": 31,
+  "reviews": [
+    {
+      "provider": "zen-glm-5",
+      "lineage": "Zhipu",
+      "pr": "#29",
+      "success": false,
+      "parseError": "1",
+      "findingsCount": 0,
+      "findings": []
+    },
+    {
+      "provider": "file://providers/cli-codex.cjs",
+      "lineage": "OpenAI",
+      "pr": "#29",
+      "success": true,
+      "findingsCount": 3,
+      "findings": [
+        {
+          "file": "src/cli/index.ts",
+          "line": 70,
+          "severity": "P1",
+          "category": "bug",
+          "summary": "Passing an explicit false default to the negated --no-watchdog Commander option makes opts.watchdog false when the flag is omitted, so detached starts skip the watchdog by default."
+        },
+        {
+          "file": "src/cli/stop.ts",
+          "line": 12,
+          "severity": "P1",
+          "category": "spec",
+          "summary": "The watchdog stop path reports success as soon as the watchdog PID exits instead of verifying that the daemon also stopped and both PID files were cleaned up, violating the stop contract and potentially hiding a live unsupervised daemon."
+        },
+        {
+          "file": "src/daemon/lifecycle.ts",
+          "line": 230,
+          "severity": "P2",
+          "category": "bug",
+          "summary": "The orphan-worktree PR check runs gh pr list without setting cwd to the owning repository/worktree, so daemon starts from another directory can treat all sleep worktrees as having no open PR and send false orphan notifications."
+        }
+      ]
+    },
+    {
+      "provider": "file://providers/cli-copilot.cjs",
+      "lineage": "GitHub-wrapped",
+      "pr": "#29",
+      "success": true,
+      "findingsCount": 6,
+      "findings": [
+        {
+          "file": "src/cli/status.ts",
+          "line": 3,
+          "severity": "P0",
+          "category": "bug",
+          "summary": "readWatchdogPidFile() uses fsp.readFile but file does not import 'node:fs/promises' — calling kuroboto status will crash."
+        },
+        {
+          "file": "src/cli/status.ts",
+          "line": 20,
+          "severity": "P1",
+          "category": "spec",
+          "summary": "status output references health.data.pending but Spec H shrinks /v1/health to { ok, uptimeSec } — mismatch between health shape and usage."
+        },
+        {
+          "file": "src/daemon/lifecycle.ts",
+          "line": 220,
+          "severity": "P1",
+          "category": "bug",
+          "summary": "expandHome() uses os.homedir() but 'os' is not imported; this will throw a ReferenceError during orphan worktree scanning."
+        },
+        {
+          "file": "src/daemon/lifecycle.ts",
+          "line": 196,
+          "severity": "P2",
+          "category": "silent-failure",
+          "summary": "announceOrphanedWorktrees swallows per-message send errors (.catch(()=>{}) ) without logging; failing notifications become invisible in logs."
+        },
+        {
+          "file": "src/cli/start.ts",
+          "line": 44,
+          "severity": "P2",
+          "category": "convention",
+          "summary": "Console message uses 'daemon iniciado (watchdog PID=...)' even when starting the watchdog — misleading label may confuse users/automation."
+        },
+        {
+          "file": "test/",
+          "line": 1,
+          "severity": "P1",
+          "category": "test-gap",
+          "summary": "Spec G requires multiple unit/integration tests (policy.test.ts, lifecycle.test.ts, watchdog integration tests) but PR does not include the promised test files — missing test coverage for critical watchdog logic."
+        }
+      ]
+    },
+    {
+      "provider": "zen-kimi-k2.6",
+      "lineage": "Moonshot",
+      "pr": "#29",
+      "success": true,
+      "findingsCount": 20,
+      "findings": [
+        {
+          "file": "src/cli/start.ts",
+          "line": 68,
+          "severity": "P1",
+          "category": "bug",
+          "summary": "Log message says 'daemon iniciado' even when spawning watchdog, misleading user about which process started"
+        },
+        {
+          "file": "src/cli/stop.ts",
+          "line": 12,
+          "severity": "P1",
+          "category": "bug",
+          "summary": "Does not delete WATCHDOG_PID_FILE after successful stop; stale PID file will block future starts or confuse status"
+        },
+        {
+          "file": "src/cli/stop.ts",
+          "line": 12,
+          "severity": "P1",
+          "category": "spec",
+          "summary": "Spec requires watchdog SIGTERM handler to delete both PID files, but CLI-side stop.ts also needs cleanup for the case where watchdog exits cleanly before CLI polls again"
+        },
+        {
+          "file": "src/daemon/lifecycle.ts",
+          "line": 192,
+          "severity": "P1",
+          "category": "spec",
+          "summary": "Orphan worktree scan uses 'void' fire-and-forget without awaiting, but spec says 'at startup' implying it should complete before daemon reports healthy; race condition where /health 200s before scan finishes, watchdog marks everHealthy=true, then scan fails and logs are lost if daemon crashes immediately after"
+        },
+        {
+          "file": "src/daemon/lifecycle.ts",
+          "line": 227,
+          "severity": "P1",
+          "category": "security",
+          "summary": "expandHome uses naive string replacement that fails on Windows paths with backslashes after ~, and doesn't handle ~user syntax; also os import is missing at top of file despite being used"
+        },
+        {
+          "file": "src/daemon/lifecycle.ts",
+          "line": 235,
+          "severity": "P1",
+          "category": "security",
+          "summary": "listOpenSleepBranchesViaGh spawns 'gh' without validating it's in PATH or sanitizing; more critically, it uses shell:false but passes user-controlled logger which could have prototype pollution side effects via child.stdout.on data handlers"
+        },
+        {
+          "file": "src/daemon/lifecycle.ts",
+          "line": 235,
+          "severity": "P1",
+          "category": "convention",
+          "summary": "Spawning 'gh' directly from daemon lifecycle.ts breaks the channel/cli boundary; gh CLI calls should live in src/cli/ or a dedicated git/gh module, not daemon core which is supposed to be HTTP-only business logic per AGENTS.md"
+        },
+        {
+          "file": "src/daemon/lifecycle.ts",
+          "line": 235,
+          "severity": "P2",
+          "category": "silent-failure",
+          "summary": "listOpenSleepBranchesViaGh silently resolves to empty Set on any error, meaning orphan detection will false-positive and spam notifications for sleeps that actually have open PRs"
+        },
+        {
+          "file": "src/cli/status.ts",
+          "line": 26,
+          "severity": "P1",
+          "category": "spec",
+          "summary": "Split-brain detection only warns but doesn't set exit code; scripts using 'kuroboto status --quiet' won't detect this degraded state, and spec implies status should 'clearly flag' which should include non-zero exit for automation"
+        },
+        {
+          "file": "src/cli/start.ts",
+          "line": 39,
+          "severity": "P2",
+          "category": "spec",
+          "summary": "Spec says 'startDetached now spawns the watchdog (not the daemon directly)' but the noWatchdog path still uses old 'daemon' label in log; minor inconsistency in user-facing output"
+        },
+        {
+          "file": "src/cli/stop.ts",
+          "line": 5,
+          "severity": "P1",
+          "category": "spec",
+          "summary": "Missing handling for case where WATCHDOG_PID_FILE exists but watchdog is dead (stale PID); should unlink stale file and fall back to legacy daemon-kill path, otherwise stop fails permanently until manual cleanup"
+        },
+        {
+          "file": "src/daemon/lifecycle.ts",
+          "line": 1,
+          "severity": "P0",
+          "category": "bug",
+          "summary": "Missing 'import os from node:os' required by expandHome function; will crash on startup when orphan scan runs"
+        },
+        {
+          "file": "src/watchdog/index.ts",
+          "line": 0,
+          "severity": "P0",
+          "category": "spec",
+          "summary": "Watchdog implementation files (src/watchdog/index.ts, policy.ts, notify.ts) are completely missing from the diff; this PR only contains CLI wiring and daemon-side orphan scan, but the spec's core deliverable is the watchdog process itself"
+        },
+        {
+          "file": "src/watchdog/index.ts",
+          "line": 0,
+          "severity": "P0",
+          "category": "test-gap",
+          "summary": "Zero test files for watchdog (policy.test.ts, lifecycle.test.ts, integration tests) are present in the diff despite spec requiring them; PR cannot be merged without these"
+        },
+        {
+          "file": "src/cli/start.ts",
+          "line": 33,
+          "severity": "P1",
+          "category": "spec",
+          "summary": "Spec requires 'checkHealth() first, if daemon already alive → já está rodando, return' but startDetached doesn't call checkHealth before spawning watchdog; will create duplicate watchdog processes if daemon already running"
+        },
+        {
+          "file": "src/cli/start.ts",
+          "line": 44,
+          "severity": "P1",
+          "category": "spec",
+          "summary": "Spec requires sharing STARTUP_LOG_FILE for stdout/stderr, but diff shows stdio: ['ignore', out, err] where 'out' and 'err' are file descriptors opened via fs.openSync; however the path used isn't visible in truncated diff and must be verified against spec's STARTUP_LOG_FILE constant"
+        },
+        {
+          "file": "src/daemon/lifecycle.ts",
+          "line": 192,
+          "severity": "P1",
+          "category": "spec",
+          "summary": "Spec says 'notify if found' for orphans, but implementation catches and swallows all channel.sendNotification errors silently without even logger.warn, violating 'best-effort: failures log to watchdog.log and continue' pattern from spec's notify.ts design (though this is daemon-side, not watchdog)"
+        },
+        {
+          "file": "docs/specs/bug-c-watchdog.md",
+          "line": 0,
+          "severity": "P2",
+          "category": "convention",
+          "summary": "Spec file committed directly to main without going through spec-via-sleep workflow per AGENTS.md conventions; however this may be intentional for the spec itself as step 2 of the workflow"
+        },
+        {
+          "file": "src/cli/status.ts",
+          "line": 36,
+          "severity": "P1",
+          "category": "spec",
+          "summary": "Spec requires status to 'show both processes' and detect split-brain, but the health check still calls old checkHealth() which per Spec H should be narrowed to {ok, uptimeSec}; however this PR doesn't include Spec H so the health.data.pending access may break when Spec H lands, creating a merge conflict"
+        },
+        {
+          "file": "src/cli/stop.ts",
+          "line": 12,
+          "severity": "P1",
+          "category": "race-condition",
+          "summary": "Polling loop checks isProcessAlive(watchdogPid) every 200ms but doesn't verify daemon also died; if watchdog exits but daemon stays alive (Unix orphaning), stop.ts reports success but daemon is still running—need to also poll PID_FILE or use process group kill"
+        }
+      ]
+    },
+    {
+      "provider": "zen-minimax-m2.7",
+      "lineage": "Minimax",
+      "pr": "#29",
+      "success": true,
+      "findingsCount": 6,
+      "findings": [
+        {
+          "file": "src/daemon/lifecycle.ts",
+          "line": 228,
+          "severity": "P1",
+          "category": "silent-failure",
+          "summary": "spawn() options object uses `shell: false` but then calls 'gh pr list' which is a valid binary. On Windows, not using `shell: true` can cause 'gh' to not be found via PATH. This is silently caught and returns empty set, masking the real issue from the user."
+        },
+        {
+          "file": "src/daemon/lifecycle.ts",
+          "line": 247,
+          "severity": "P1",
+          "category": "silent-failure",
+          "summary": "Errors in `announceOrphanedWorktrees` are swallowed with bare `catch(() => {})` after sending notifications — `logger.warn` is called but the failure is otherwise hidden and the function returns normally, making debugging impossible if the notification delivery fails in a non-obvious way."
+        },
+        {
+          "file": "src/cli/start.ts",
+          "line": 48,
+          "severity": "P1",
+          "category": "bug",
+          "summary": "startDetached no longer calls `checkHealth()` before spawning the watchdog. If the daemon is already running (from a previous `kuroboto start --detach` with `--no-watchdog`, or legacy pre-watchdog install), two watchdogs will run simultaneously with no guard. The spec says step 1 is 'run checkHealth, if alive return já está rodando'."
+        },
+        {
+          "file": "docs/specs/bug-c-watchdog.md",
+          "line": 1,
+          "severity": "P1",
+          "category": "spec",
+          "summary": "The diff includes docs/specs/daemon-health-ui.md (Spec H) which is not part of Spec G. The PR is supposed to implement M1–M3 of Spec G only; Spec H should be a separate PR per the spec's own tasks and the backlog entry's note about rebasing atop merged G."
+        },
+        {
+          "file": "src/cli/stop.ts",
+          "line": 10,
+          "severity": "P2",
+          "category": "bug",
+          "summary": "The SIGTERM handler in stop.ts only kills the watchdog, but the watchdog itself needs to handle SIGTERM and cascade-kill the daemon child. If the watchdog's SIGTERM handler has a race condition (e.g., daemon already exited naturally), the watchdog may exit before killing the daemon, leaving an orphaned daemon process."
+        },
+        {
+          "file": "src/cli/stop.ts",
+          "line": 22,
+          "severity": "P2",
+          "category": "silent-failure",
+          "summary": "When the 10s watchdog shutdown poll times out, stop.ts prints an error and exits with code 1 but does not fall back to killing the daemon directly. The user is left with a stuck watchdog and a potentially live daemon with no recovery path from the CLI."
+        }
+      ]
+    },
+    {
+      "provider": "file://providers/cli-claude-opus.cjs",
+      "lineage": "Anthropic",
+      "pr": "#29",
+      "success": true,
+      "findingsCount": 2,
+      "findings": [
+        {
+          "file": "src/cli/index.ts",
+          "line": 73,
+          "severity": "P0",
+          "category": "bug",
+          "summary": "Passing `false` as the third arg to `.option('--no-watchdog', desc, false)` overrides Commander's implicit negate-flag default of `true`, so `opts.watchdog` is `false` by default; the action then sets `noWatchdog: opts.watchdog === false` → `true`, meaning `kuroboto start --detach` runs the legacy direct-daemon path and the watchdog never starts — Spec G's 'auto-recovery is default-on' is violated (verified empirically with commander 12.1)."
+        },
+        {
+          "file": "src/cli/index.ts",
+          "line": 78,
+          "severity": "P1",
+          "category": "test-gap",
+          "summary": "No test exercises the CLI flag parsing for `start --detach` / `--no-watchdog`; the integration tests call `runWatchdog` directly, so the default-flip bug ships without a regression detector despite the spec's manual smoke step #1 specifically asserting `watchdog: alive` after `kuroboto start --detach`."
+        }
+      ]
+    },
+    {
+      "provider": "ollama-deepseek-coder-6.7b",
+      "lineage": "DeepSeek",
+      "pr": "#29",
+      "success": true,
+      "findingsCount": 4,
+      "findings": [
+        {
+          "file": "src/daemon/lifecycle.ts",
+          "line": 190,
+          "severity": "P2",
+          "category": "performance",
+          "summary": "The function `announceOrphanedWorktrees` could be moved to a separate file as it is not directly related to the daemon lifecycle."
+        },
+        {
+          "file": "src/daemon/lifecycle.ts",
+          "line": 190,
+          "severity": "P2",
+          "category": "performance",
+          "summary": "The function `expandHome` could be moved to a separate file as it is not directly related to the daemon lifecycle."
+        },
+        {
+          "file": "src/daemon/lifecycle.ts",
+          "line": 190,
+          "severity": "P2",
+          "category": "performance",
+          "summary": "The function `listOpenSleepBranchesViaGh` could be moved to a separate file as it is not directly related to the daemon lifecycle."
+        },
+        {
+          "file": "src/daemon/orphanWorktrees.ts",
+          "line": 1,
+          "severity": "P2",
+          "category": "performance",
+          "summary": "The function `scanOrphanWorktrees` could be moved to a separate file as it is not directly related to the daemon lifecycle."
+        }
+      ]
+    },
+    {
+      "provider": "ollama-qwen2.5-coder",
+      "lineage": "Alibaba",
+      "pr": "#29",
+      "success": true,
+      "findingsCount": 3,
+      "findings": [
+        {
+          "file": "src/daemon/lifecycle.ts",
+          "line": 192,
+          "severity": "P0",
+          "category": "bug",
+          "summary": "The function `announceOrphanedWorktrees` is marked as `void`, but it returns a promise. This will cause the caller to not wait for the orphan worktree scan to complete."
+        },
+        {
+          "file": "src/daemon/lifecycle.ts",
+          "line": 208,
+          "severity": "P1",
+          "category": "security",
+          "summary": "The function `listOpenSleepBranchesViaGh` spawns a subprocess using `gh pr list`. This could be a security risk if the system is not properly configured to prevent command injection."
+        },
+        {
+          "file": "src/daemon/lifecycle.ts",
+          "line": 218,
+          "severity": "P2",
+          "category": "convention",
+          "summary": "The function `listOpenSleepBranchesViaGh` uses a callback pattern for error handling. This is less idiomatic in modern JavaScript and could be replaced with a more robust error handling mechanism."
+        }
+      ]
+    },
+    {
+      "provider": "file://providers/cli-claude-sonnet.cjs",
+      "lineage": "Anthropic",
+      "pr": "#29",
+      "success": true,
+      "findingsCount": 7,
+      "findings": [
+        {
+          "file": "src/daemon/lifecycle.ts",
+          "line": 230,
+          "severity": "P1",
+          "category": "silent-failure",
+          "summary": "`listOpenSleepBranchesViaGh` resolves with an empty `Set<string>` on any `gh` failure (not installed, unauthenticated, non-zero exit), so `scanOrphanWorktrees` treats every sleep worktree older than 5 minutes as having no open PR and fires false-positive orphan notifications on every daemon restart when `gh` is unavailable."
+        },
+        {
+          "file": "src/cli/index.ts",
+          "line": 71,
+          "severity": "P1",
+          "category": "bug",
+          "summary": "Commander.js always defaults the underlying `watchdog` property to `true` for `--no-*` options and silently ignores the explicit `, false` third argument; the dead-code default misrepresents the actual runtime default and risks a future refactor silently disabling the watchdog by default, violating the spec's 'auto-recovery is default-on' invariant."
+        },
+        {
+          "file": "src/cli/start.ts",
+          "line": 39,
+          "severity": "P1",
+          "category": "spec",
+          "summary": "Spec's failure-modes table explicitly requires `start.ts` to call `isProcessAlive` on any existing `WATCHDOG_PID_FILE` and unlink stale entries before spawning a new watchdog, mirroring `ensureNoExistingDaemon`; no such check appears in the diff."
+        },
+        {
+          "file": "src/watchdog/index.ts",
+          "line": 1,
+          "severity": "P1",
+          "category": "test-gap",
+          "summary": "Core watchdog source files (`src/watchdog/{index,policy,notify}.ts`) and all five spec-mandated test files (`policy.test.ts`, `lifecycle.test.ts`, `watchdog-bugC.test.ts`, `watchdog-startup.test.ts`, `watchdog-stop.test.ts`) are absent from the visible diff; if M1 and M2 milestones were not implemented, `startDetached` resolves to a non-existent entry point and crashes at runtime on every `kuroboto start --detach`."
+        },
+        {
+          "file": "src/cli/stop.ts",
+          "line": 14,
+          "severity": "P2",
+          "category": "bug",
+          "summary": "Stop prints 'watchdog + daemon parados' the instant `isProcessAlive(watchdogPid)` returns false, before the watchdog's own SIGTERM→SIGKILL→reap sequence for the daemon child finishes; spec requires waiting until both PID files have disappeared, not just the watchdog's."
+        },
+        {
+          "file": "src/cli/stop.ts",
+          "line": 38,
+          "severity": "P2",
+          "category": "convention",
+          "summary": "`readWatchdogPid` in `stop.ts` and `readWatchdogPidFile` in `status.ts` are byte-identical implementations that should be extracted to `util.ts` alongside the existing `readPid()`, following the project's established sharing pattern."
+        },
+        {
+          "file": "src/cli/stop.ts",
+          "line": 20,
+          "severity": "P2",
+          "category": "bug",
+          "summary": "When `WATCHDOG_PID_FILE` exists but the watchdog process is already dead (stale PID from a prior crash), the code falls through to the legacy daemon-kill path without unlinking the stale file, leaving it on disk so `kuroboto status` reports 'watchdog: dead (stale PID)' after an otherwise successful stop."
+        }
+      ]
+    },
+    {
+      "provider": "file://providers/cli-gemini.cjs",
+      "lineage": "Google",
+      "pr": "#29",
+      "success": true,
+      "findingsCount": 5,
+      "findings": [
+        {
+          "file": "src/daemon/lifecycle.ts",
+          "line": 457,
+          "severity": "P0",
+          "category": "bug",
+          "summary": "Missing 'node:os' import in lifecycle.ts will cause a ReferenceError when calling os.homedir() in expandHome."
+        },
+        {
+          "file": "src/watchdog/index.ts",
+          "line": 261,
+          "severity": "P1",
+          "category": "bug",
+          "summary": "The watchdog leaks two file descriptors on every respawn cycle because it fails to close its handles to the redirected stdio files."
+        },
+        {
+          "file": "src/cli/start.ts",
+          "line": 45,
+          "severity": "P1",
+          "category": "bug",
+          "summary": "Missing guard against multiple watchdogs allows duplicate supervisor processes to run and race on respawns."
+        },
+        {
+          "file": "src/cli/stop.ts",
+          "line": 12,
+          "severity": "P2",
+          "category": "spec",
+          "summary": "stopCommand fails to verify daemon exit or PID file deletion, merely assuming success when the watchdog process terminates."
+        },
+        {
+          "file": "src/watchdog/index.ts",
+          "line": 292,
+          "severity": "P2",
+          "category": "spec",
+          "summary": "Required audit entries (watchdog-respawn, watchdog-gave-up, watchdog-startup-failure) defined in the spec are missing from the implementation."
+        }
+      ]
+    },
+    {
+      "provider": "zen-minimax-m2.7",
+      "lineage": "Minimax",
+      "pr": "#30",
+      "success": false,
+      "parseError": "1",
+      "findingsCount": 0,
+      "findings": []
+    },
+    {
+      "provider": "file://providers/cli-claude-sonnet.cjs",
+      "lineage": "Anthropic",
+      "pr": "#30",
+      "success": false,
+      "parseError": "2",
+      "findingsCount": 0,
+      "findings": []
+    },
+    {
+      "provider": "zen-glm-5",
+      "lineage": "Zhipu",
+      "pr": "#30",
+      "success": false,
+      "parseError": "1",
+      "findingsCount": 0,
+      "findings": []
+    },
+    {
+      "provider": "ollama-deepseek-coder-6.7b",
+      "lineage": "DeepSeek",
+      "pr": "#30",
+      "success": false,
+      "parseError": "1",
+      "findingsCount": 0,
+      "findings": []
+    },
+    {
+      "provider": "file://providers/cli-claude-opus.cjs",
+      "lineage": "Anthropic",
+      "pr": "#30",
+      "success": true,
+      "findingsCount": 5,
+      "findings": [
+        {
+          "file": ".github/workflows/claude.yml",
+          "line": 13,
+          "severity": "P1",
+          "category": "security",
+          "summary": "@claude trigger has no author_association filter — on issue_comment events the workflow runs in the base repo with full secrets access, so a fork-PR author (or any drive-by commenter) can invoke Claude with the OAuth token, exposing the repo to quota abuse and arbitrary tool execution; gate with author_association in ('OWNER','MEMBER','COLLABORATOR')."
+        },
+        {
+          "file": "src/watchdog/index.ts",
+          "line": 290,
+          "severity": "P2",
+          "category": "bug",
+          "summary": "FD leak protection only covers the spawn-throws path; if the second openLogFd call (errFd) throws after outFd succeeded, outFd is never closed because the catch block runs only when spawnFn itself throws — wrap both opens in their own try/finally."
+        },
+        {
+          "file": "src/cli/start.ts",
+          "line": 50,
+          "severity": "P2",
+          "category": "bug",
+          "summary": "Stale-PID unlink-and-proceed path is racy: two concurrent `kuroboto start --detach` invocations can both observe the same stale watchdog.pid, both unlink it, and both spawn watchdogs that race over WATCHDOG_PID_FILE; an O_EXCL pidfile create or flock would close this."
+        },
+        {
+          "file": "docs/specs/sleep-mode.md",
+          "line": 63,
+          "severity": "P2",
+          "category": "spec",
+          "summary": "PR scope mixes Spec G (watchdog) with the unrelated sleepModel addendum and the claude.yml workflow; per the spec-via-sleep workflow each spec should land as its own PR so review/bisect stay clean."
+        },
+        {
+          "file": "test/integration/watchdogBugC.test.ts",
+          "line": 1,
+          "severity": "P2",
+          "category": "test-gap",
+          "summary": "Spec test plan names `watchdog-startup.test.ts` and `watchdog-stop.test.ts` cases (e.g. 'falls back to direct daemon spawn with --no-watchdog flag', 'kuroboto stop with stale watchdog PID file falls back to direct daemon kill') — these files are not in the visible diff; verify they exist from earlier commits in this PR or add them, otherwise spec coverage claims are unsubstantiated."
+        }
+      ]
+    },
+    {
+      "provider": "file://providers/cli-codex.cjs",
+      "lineage": "OpenAI",
+      "pr": "#30",
+      "success": true,
+      "findingsCount": 2,
+      "findings": [
+        {
+          "file": ".github/workflows/claude.yml",
+          "line": 13,
+          "severity": "P1",
+          "category": "security",
+          "summary": "The Claude workflow can be triggered by any `@claude` issue or PR comment without an actor/author-association allowlist while providing `CLAUDE_CODE_OAUTH_TOKEN` and OIDC access to the action."
+        },
+        {
+          "file": "src/cli/stop.ts",
+          "line": 15,
+          "severity": "P1",
+          "category": "spec",
+          "summary": "The watchdog stop path appears to treat the stop as successful once the watchdog PID is gone instead of waiting for both watchdog and daemon PID files/processes to disappear as required by the spec."
+        }
+      ]
+    },
+    {
+      "provider": "file://providers/cli-copilot.cjs",
+      "lineage": "GitHub-wrapped",
+      "pr": "#30",
+      "success": true,
+      "findingsCount": 8,
+      "findings": [
+        {
+          "file": "src/worktree.ts",
+          "line": 1,
+          "severity": "P0",
+          "category": "bug",
+          "summary": "Removed import of 'node:path' at file top but other functions in this file still use the 'path' symbol; this will cause a runtime ReferenceError and crash code paths that call worktree utilities."
+        },
+        {
+          "file": "src/watchdog/index.ts",
+          "line": 144,
+          "severity": "P1",
+          "category": "silent-failure",
+          "summary": "openLogFd falls back to opening the OS null device; if fs.openSync(file,'a') throws for both the requested file and the null-device fallback (e.g. unusual FS errors) the exception will propagate and can crash the watchdog startup — add a last-resort guarded path and surface a clear error to logs/CLI instead of letting spawn throw."
+        },
+        {
+          "file": "src/watchdog/index.ts",
+          "line": 231,
+          "severity": "P1",
+          "category": "bug",
+          "summary": "spawn + stdio FDs: the code opens file descriptors and immediately closes the parent's handles after spawn. On some Windows Node versions handle duplication nuances can still leak or prematurely close child handles; add explicit tests on Windows CI for multiple respawn cycles to ensure no FD leaks and the child retains its stdio reliably."
+        },
+        {
+          "file": "src/cli/start.ts",
+          "line": 45,
+          "severity": "P1",
+          "category": "spec",
+          "summary": "startDetached's watchdog-existence check uses WATCHDOG_PID_FILE and isProcessAlive but doesn't verify PID ownership or whether the PID belongs to another kuroboto user/process; stale or PID-recycled processes could block a legitimate start — consider validating process command line or writing watchdog pidfile with an identifying marker (e.g., start timestamp / signature)."
+        },
+        {
+          "file": "src/daemon/lifecycle.ts",
+          "line": 77,
+          "severity": "P1",
+          "category": "bug",
+          "summary": "Passing defaultModel: config.policy.sleepModel into startDaemon assumes the startDaemon/RunningDaemon constructor accepts a 'defaultModel' option; if the signature was not updated to accept this, this will be a type/runtime error — ensure startDaemon API is updated and tests cover daemon start."
+        },
+        {
+          "file": "test/unit/watchdog/policy.test.ts",
+          "line": 1,
+          "severity": "P1",
+          "category": "test-gap",
+          "summary": "Spec requires policy unit tests (nextBackoff, shouldRespawn) but this PR does not clearly include test/unit/watchdog/policy.test.ts in the diff — missing or not run would leave core backoff/respawn logic unverified."
+        },
+        {
+          "file": ".github/workflows/ci.yml",
+          "line": 7,
+          "severity": "P2",
+          "category": "convention",
+          "summary": "CI matrix added macOS and Windows; ensure all integration tests (watchdog respawn, FD leak checks) are exercised on Windows and macOS runners — several runtime behaviors differ by OS and the new watchdog code is sensitive to platform differences."
+        },
+        {
+          "file": "src/cli/sleeping.ts",
+          "line": 105,
+          "severity": "P2",
+          "category": "security",
+          "summary": "Accepting --model CLI input and forwarding it to spawn is validated to the enum, but ensure that any future models added cannot be used to inject unexpected cli args; keep validation strict and avoid direct string concatenation into command lines."
+        }
+      ]
+    },
+    {
+      "provider": "zen-kimi-k2.6",
+      "lineage": "Moonshot",
+      "pr": "#30",
+      "success": true,
+      "findingsCount": 11,
+      "findings": [
+        {
+          "file": "src/watchdog/index.ts",
+          "line": 144,
+          "severity": "P0",
+          "category": "bug",
+          "summary": "isRespawn flag is set to true AFTER spawn but BEFORE health check succeeds, meaning a daemon that crashes during startup (before everHealthy) will still fire onDaemonRespawn with the new PID, violating spec's 'everHealthy === false → no respawn' semantics and confusing v2 sleep recovery"
+        },
+        {
+          "file": "src/watchdog/index.ts",
+          "line": 292,
+          "severity": "P1",
+          "category": "spec",
+          "summary": "onDaemonRespawn hook fires for timeout-respawn path but not for the 'exited before healthy' path, creating asymmetric v2 sleep-recovery interface; spec says 'watchdog v1 should expose onDaemonRespawn(pid) interface so v2 can plug in non-invasively' but this is inconsistent"
+        },
+        {
+          "file": "src/cli/stop.ts",
+          "line": 6,
+          "severity": "P1",
+          "category": "bug",
+          "summary": "ESRCH swallowing on process.kill is applied to BOTH watchdog and daemon paths, but the daemon path (legacy --no-watchdog) should NOT swallow ESRCH silently — a stale PID_FILE with dead daemon should fall through to the 'not running' message, not pretend success; current logic masks the split-brain case the spec wants status to detect"
+        },
+        {
+          "file": "src/watchdog/index.ts",
+          "line": 207,
+          "severity": "P1",
+          "category": "silent-failure",
+          "summary": "openLogFd fallback to /dev/null on failure logs the error but then silently discards all daemon stdout/stderr; startup errors that PR #23 is meant to surface will be lost, and the log line itself is the only evidence — tests won't catch this because they mock fs"
+        },
+        {
+          "file": "src/watchdog/index.ts",
+          "line": 261,
+          "severity": "P1",
+          "category": "bug",
+          "summary": "outFd and errFd are closed unconditionally after spawn even if spawn threw, but the catch block also tries to close them — double-close risk on spawn failure; while fs.closeSync on invalid fd throws, the catch-swallow means this is silently ignored but still racy with fd reuse in multi-threaded libuv"
+        },
+        {
+          "file": "src/cli/start.ts",
+          "line": 45,
+          "severity": "P2",
+          "category": "spec",
+          "summary": "Double-start guard checks watchdog PID file but does NOT verify the daemon itself is absent via checkHealth(), creating a race where watchdog is dead but daemon is alive (split-brain); spec says status should 'clearly flag' this but start.ts should prevent it"
+        },
+        {
+          "file": "src/daemon/routes.ts",
+          "line": 88,
+          "severity": "P2",
+          "category": "spec",
+          "summary": "HTTP route accepts model?: string instead of model?: 'sonnet' | 'opus', deferring validation to inline check; Zod validation on ConfigT exists but the route body bypasses it — inconsistent with project's schema-first pattern in config/schema.ts"
+        },
+        {
+          "file": "test/integration/watchdogBugC.test.ts",
+          "line": 9,
+          "severity": "P1",
+          "category": "test-gap",
+          "summary": "Diff shows only 'import fs' added but truncated; cannot verify if the critical test cases from spec are actually present — 'respawns after external SIGKILL', 'does NOT respawn when daemon never becomes healthy', 'gives up after 5 rapid respawns' — need to see full file to confirm coverage"
+        },
+        {
+          "file": ".github/workflows/claude.yml",
+          "line": 1,
+          "severity": "P2",
+          "category": "convention",
+          "summary": "New workflow file is unrelated to the Bug C watchdog spec; appears to be scope creep from a different feature branch merged into this PR — violates AGENTS.md 'one spec per PR' dispatch pattern and complicates review surface"
+        },
+        {
+          "file": "docs/specs/sleep-mode.md",
+          "line": 59,
+          "severity": "P2",
+          "category": "spec",
+          "summary": "sleepModel addendum is merged into the same PR as Bug C watchdog; spec workflow says 'Spec B: free-text Q&A via tmux inject (depends on Spec A merging first)' and this is neither A nor B — scope creep that should be separate PR per docs/workflows/spec-via-sleep.md"
+        },
+        {
+          "file": "src/daemon/sleeping.ts",
+          "line": 167,
+          "severity": "P2",
+          "category": "security",
+          "summary": "--model flag is injected via string array to spawn but no validation that req.model doesn't contain shell metacharacters; while spawn() with array args prevents shell injection, the Zod schema only validates at config load time not at HTTP boundary — defense in depth gap"
+        }
+      ]
+    },
+    {
+      "provider": "file://providers/cli-gemini.cjs",
+      "lineage": "Google",
+      "pr": "#30",
+      "success": true,
+      "findingsCount": 5,
+      "findings": [
+        {
+          "file": "src/daemon/worktree.ts",
+          "line": 63,
+          "severity": "P1",
+          "category": "bug",
+          "summary": "Case-sensitive path comparison in isWorktree will fail on Windows if drive letter casing differs between Node realpath and git output."
+        },
+        {
+          "file": "src/watchdog/index.ts",
+          "line": 154,
+          "severity": "P2",
+          "category": "silent-failure",
+          "summary": "openLogFd falls back to /dev/null on error, which prevents the parent CLI from capturing daemon startup failures during respawn cycles."
+        },
+        {
+          "file": "src/watchdog/index.ts",
+          "line": 266,
+          "severity": "P2",
+          "category": "performance",
+          "summary": "Redundant file descriptors: the same startupLog file is opened twice for stdout and stderr instead of sharing a single FD."
+        },
+        {
+          "file": "src/daemon/routes.ts",
+          "line": 102,
+          "severity": "P2",
+          "category": "convention",
+          "summary": "Hardcoded model strings 'sonnet'/'opus' bypass the existing PolicyConfig Zod schema enum."
+        },
+        {
+          "file": "src/watchdog/index.ts",
+          "line": 292,
+          "severity": "P2",
+          "category": "bug",
+          "summary": "fs.closeSync(outFd) will throw TypeError if spawn failed before assignment; though caught, it should check for null explicitly."
+        }
+      ]
+    },
+    {
+      "provider": "ollama-qwen2.5-coder",
+      "lineage": "Alibaba",
+      "pr": "#30",
+      "success": true,
+      "findingsCount": 2,
+      "findings": [
+        {
+          "file": "src/daemon.ts",
+          "line": 102,
+          "severity": "P1",
+          "category": "bug",
+          "summary": "The `handleStopSignal` function does not handle the case where `stopping` is true before the main loop's exitPromise resolves, leading to a potential race condition."
+        },
+        {
+          "file": "src/watchdog.ts",
+          "line": 256,
+          "severity": "P1",
+          "category": "bug",
+          "summary": "The `openSafe` function is no longer used and should be removed to avoid confusion and potential bugs."
+        }
+      ]
+    },
+    {
+      "provider": "zen-minimax-m2.7",
+      "lineage": "Minimax",
+      "pr": "#21",
+      "success": false,
+      "parseError": "1",
+      "findingsCount": 0,
+      "findings": []
+    },
+    {
+      "provider": "ollama-deepseek-coder-6.7b",
+      "lineage": "DeepSeek",
+      "pr": "#21",
+      "success": false,
+      "parseError": "1",
+      "findingsCount": 0,
+      "findings": []
+    },
+    {
+      "provider": "zen-glm-5",
+      "lineage": "Zhipu",
+      "pr": "#21",
+      "success": false,
+      "parseError": "1",
+      "findingsCount": 0,
+      "findings": []
+    },
+    {
+      "provider": "file://providers/cli-codex.cjs",
+      "lineage": "OpenAI",
+      "pr": "#21",
+      "success": true,
+      "findingsCount": 2,
+      "findings": [
+        {
+          "file": "src/cli/chatClear.ts",
+          "line": 39,
+          "severity": "P1",
+          "category": "bug",
+          "summary": "The client timeout scales as only 200ms per message while the daemon deletes messages sequentially with Telegram calls that can each take up to 5s, so valid `--last 100` clears can abort mid-operation and falsely report the daemon as offline while deletion continues."
+        },
+        {
+          "file": "src/cli/index.ts",
+          "line": 25,
+          "severity": "P1",
+          "category": "convention",
+          "summary": "The global `--debug` stripping runs before the raw `kuroboto claude [...args]` shortcut, so `kuroboto claude --debug` no longer forwards that argument to Claude Code despite the command's raw-forwarding contract."
+        }
+      ]
+    },
+    {
+      "provider": "file://providers/cli-copilot.cjs",
+      "lineage": "GitHub-wrapped",
+      "pr": "#21",
+      "success": true,
+      "findingsCount": 6,
+      "findings": [
+        {
+          "file": "src/channels/Channel.ts",
+          "line": 59,
+          "severity": "P0",
+          "category": "bug",
+          "summary": "Stray diff/stat text (e.g. \"23 -0\") appears in the file after the Channel interface—this will produce a TypeScript/parse error and break the build."
+        },
+        {
+          "file": "src/cli/http.ts",
+          "line": 1,
+          "severity": "P1",
+          "category": "spec",
+          "summary": "kuroFetch's error classification (handleFetchError) only inspects err.code/err.cause.code and may miss common fetch abort/timed-out shapes (e.g. AbortError, DOMException name or message contains 'ECONNREFUSED')—so daemon-down may not be detected reliably as the spec requires."
+        },
+        {
+          "file": "src/channels/telegram/TelegramChannel.ts",
+          "line": 108,
+          "severity": "P1",
+          "category": "bug",
+          "summary": "clearLastMessages records and iterates over sentMessages but it's unclear whether successfully-deleted messages are removed from the ring buffer; if they are not removed the CLI may repeatedly attempt to delete the same messages and counts will be inaccurate."
+        },
+        {
+          "file": "src/cli/index.ts",
+          "line": 24,
+          "severity": "P2",
+          "category": "convention",
+          "summary": "The global --debug flag is detected after module imports; if any imported module performs network requests at import time the debug flag will not apply to those calls—move debug detection before other CLI imports or ensure modules don't perform network work at import."
+        },
+        {
+          "file": "src/channels/telegram/api.ts",
+          "line": 146,
+          "severity": "P2",
+          "category": "bug",
+          "summary": "deleteMessage/deleteForumTopic parse res.json().catch(() => null) and throw ChannelError with the raw description; if Telegram returns non-JSON or an unexpected shape the error path uses generic HTTP code text but doesn't include the response body for diagnostics—consider including text fallback or richer error context for easier debugging."
+        },
+        {
+          "file": "test/unit/cli/",
+          "line": 1,
+          "severity": "P1",
+          "category": "test-gap",
+          "summary": "Spec requires unit tests for sleepingCleanup, topicsClear, chatClear and kuroFetch; those test files are listed in spec but are not present in the diff excerpt—ensure unit tests are added and cover dry-run, merged filtering, ECONNREFUSED handling, and 48h delete-window behaviour."
+        }
+      ]
+    },
+    {
+      "provider": "file://providers/cli-claude-opus.cjs",
+      "lineage": "Anthropic",
+      "pr": "#21",
+      "success": true,
+      "findingsCount": 5,
+      "findings": [
+        {
+          "file": "src/cli/index.ts",
+          "line": 30,
+          "severity": "P1",
+          "category": "bug",
+          "summary": "`claudeIdx` is computed before the `--debug` filter mutates `process.argv`, so `kuroboto --debug claude ...args` slices with a stale index and drops the first forwarded arg (e.g. `kuroboto --debug claude --resume` forwards `[]` instead of `['--resume']`)."
+        },
+        {
+          "file": "src/cli/http.ts",
+          "line": 393,
+          "severity": "P2",
+          "category": "security",
+          "summary": "`kuroFetch` attaches the `X-Kuroboto-Token` header unconditionally, including when `pathOrUrl.startsWith('http')` and points at an arbitrary host — a footgun that would leak the daemon auth token to any external URL a future caller passes in; restrict the header to the loopback daemon URL."
+        },
+        {
+          "file": "src/channels/telegram/TelegramChannel.ts",
+          "line": 150,
+          "severity": "P2",
+          "category": "bug",
+          "summary": "`clearLastMessages` slices `sentMessages` then awaits per-message `deleteMessage` calls; if `recordSent` pushes new outbound IDs during those awaits and the (truncated) survivors logic rewrites `sentMessages`, those concurrent sends are lost from the ring buffer."
+        },
+        {
+          "file": "src/channels/telegram/TelegramChannel.ts",
+          "line": 131,
+          "severity": "P2",
+          "category": "silent-failure",
+          "summary": "`await this.topicManager.purge(t.key).catch(() => {})` swallows purge errors with no `opts.logger.warn` call, so a failed cache write during the thread-not-found recovery path leaves stale state silently."
+        },
+        {
+          "file": "src/cli/chatClear.ts",
+          "line": 29,
+          "severity": "P2",
+          "category": "convention",
+          "summary": "On `--last 0` or non-numeric input the command exits 1 without ever round-tripping to the daemon — fine — but it does so before checking forumMode/DM, so a user in forumMode who runs `chat clear` gets the count error instead of the spec's intended 'use topics clear instead' guidance."
+        }
+      ]
+    },
+    {
+      "provider": "file://providers/cli-gemini.cjs",
+      "lineage": "Google",
+      "pr": "#21",
+      "success": true,
+      "findingsCount": 8,
+      "findings": [
+        {
+          "file": "src/cli/http.ts",
+          "line": 61,
+          "severity": "P1",
+          "category": "security",
+          "summary": "The --debug flag logs full request bodies to stderr, which could leak sensitive information if used with future commands that transmit secrets."
+        },
+        {
+          "file": "src/channels/telegram/TelegramChannel.ts",
+          "line": 111,
+          "severity": "P1",
+          "category": "bug",
+          "summary": "The clearLastMessages method likely fails to remove deleted messages from the sentMessages ring buffer, leading to redundant API calls on repeat invocations."
+        },
+        {
+          "file": "src/cli/index.ts",
+          "line": 28,
+          "severity": "P1",
+          "category": "bug",
+          "summary": "Global --debug flag removal from process.argv via string filtering is brittle and could inadvertently remove valid positional arguments or values."
+        },
+        {
+          "file": "src/daemon/sleepFinish.ts",
+          "line": 1,
+          "severity": "P1",
+          "category": "spec",
+          "summary": "The PR is missing the implementation for spec M1 (PR title H1 extraction) despite referencing it in the task list."
+        },
+        {
+          "file": "src/cli/sleepingCleanup.ts",
+          "line": 1,
+          "severity": "P1",
+          "category": "spec",
+          "summary": "The implementation file for the sleeping cleanup subcommand is missing from the diff."
+        },
+        {
+          "file": "src/cli/topicsClear.ts",
+          "line": 1,
+          "severity": "P1",
+          "category": "spec",
+          "summary": "The implementation file for the topics clear subcommand is missing from the diff."
+        },
+        {
+          "file": "src/cli/ohayo.ts",
+          "line": 1,
+          "severity": "P1",
+          "category": "spec",
+          "summary": "The ohayo refactor for PTY mode (Spec M5) is missing, which will cause the updated CLI registration to fail."
+        },
+        {
+          "file": "src/cli/index.ts",
+          "line": 49,
+          "severity": "P1",
+          "category": "spec",
+          "summary": "The PR does not implement the kuroFetch refactor for sleeping.ts, audit.ts, allowlist.ts, and mode.ts as required by Spec M6."
+        }
+      ]
+    },
+    {
+      "provider": "ollama-qwen2.5-coder",
+      "lineage": "Alibaba",
+      "pr": "#21",
+      "success": true,
+      "findingsCount": 2,
+      "findings": [
+        {
+          "file": "src/cli/index.ts",
+          "line": 30,
+          "severity": "P2",
+          "category": "convention",
+          "summary": "The `ohayoCommand` function should be renamed to follow the naming convention of other command functions."
+        },
+        {
+          "file": "src/cli/topicsClear.ts",
+          "line": 15,
+          "severity": "P2",
+          "category": "convention",
+          "summary": "The `topicsClearCommand` function should be renamed to follow the naming convention of other command functions."
+        }
+      ]
+    },
+    {
+      "provider": "zen-kimi-k2.6",
+      "lineage": "Moonshot",
+      "pr": "#21",
+      "success": true,
+      "findingsCount": 20,
+      "findings": [
+        {
+          "file": "src/cli/http.ts",
+          "line": 75,
+          "severity": "P0",
+          "category": "security",
+          "summary": "Auth token 'X-Kuroboto-Token' is printed in debug output when --debug is set, leaking secrets to stderr/logs"
+        },
+        {
+          "file": "src/cli/http.ts",
+          "line": 93,
+          "severity": "P0",
+          "category": "security",
+          "summary": "Auth token appears in debug output on response path via JSON.stringify(parsed) if daemon echoes headers or token appears in body"
+        },
+        {
+          "file": "src/cli/sleepingCleanup.ts",
+          "line": 0,
+          "severity": "P1",
+          "category": "spec",
+          "summary": "Spec M2 requires 'gh pr list --state merged --head sleep/*' filtering but file is not in diff — implementation missing from PR"
+        },
+        {
+          "file": "src/cli/sleepingCleanup.ts",
+          "line": 0,
+          "severity": "P1",
+          "category": "test-gap",
+          "summary": "No test file test/unit/cli/sleepingCleanup.test.ts in diff despite spec requiring it"
+        },
+        {
+          "file": "src/cli/topicsClear.ts",
+          "line": 0,
+          "severity": "P1",
+          "category": "spec",
+          "summary": "Spec M3 requires topicsClear command but file is not in diff — implementation missing from PR"
+        },
+        {
+          "file": "src/cli/topicsClear.ts",
+          "line": 0,
+          "severity": "P1",
+          "category": "test-gap",
+          "summary": "No test file test/unit/cli/topicsClear.test.ts in diff despite spec requiring it"
+        },
+        {
+          "file": "src/daemon/sleepFinish.ts",
+          "line": 0,
+          "severity": "P1",
+          "category": "spec",
+          "summary": "Spec M1 requires H1 extraction from spec content in sleepFinish.ts but file changes are not in diff — implementation missing from PR"
+        },
+        {
+          "file": "src/cli/ohayo.ts",
+          "line": 0,
+          "severity": "P1",
+          "category": "spec",
+          "summary": "Spec M5 requires ohayo.ts PTY refactor with --tmux flag but file changes are not in diff — implementation missing from PR"
+        },
+        {
+          "file": "src/cli/index.ts",
+          "line": 28,
+          "severity": "P1",
+          "category": "bug",
+          "summary": "--debug flag stripping uses simple filter that corrupts argv when --debug appears as a value to another flag (e.g., 'kuroboto chat clear --last --debug')"
+        },
+        {
+          "file": "src/channels/telegram/TelegramChannel.ts",
+          "line": 108,
+          "severity": "P1",
+          "category": "bug",
+          "summary": "recordSent called with messageId=undefined when topicManager path throws non-isThreadNotFoundError, causing undefined push into sentMessages ring buffer"
+        },
+        {
+          "file": "src/channels/telegram/TelegramChannel.ts",
+          "line": 165,
+          "severity": "P1",
+          "category": "silent-failure",
+          "summary": "dryRun returns cleared: targets.map(...) without validating keys exist or threadIds are valid — differs from real path which may fail on missing keys"
+        },
+        {
+          "file": "src/channels/telegram/TelegramChannel.ts",
+          "line": 195,
+          "severity": "P1",
+          "category": "bug",
+          "summary": "clearLastMessages dryRun computes outOfWindow but returns deleted:0 instead of attempted-outOfWindow, misrepresenting what would happen"
+        },
+        {
+          "file": "src/channels/telegram/TelegramChannel.ts",
+          "line": 210,
+          "severity": "P1",
+          "category": "silent-failure",
+          "summary": "survivors array is populated but never used — dead code suggests incomplete cleanup of sentMessages ring buffer after deletion"
+        },
+        {
+          "file": "src/channels/telegram/TelegramChannel.ts",
+          "line": 215,
+          "severity": "P1",
+          "category": "bug",
+          "summary": "deleted messages are not removed from sentMessages ring buffer, causing repeated deletion attempts on subsequent clear calls"
+        },
+        {
+          "file": "src/channels/telegram/api.ts",
+          "line": 146,
+          "severity": "P2",
+          "category": "convention",
+          "summary": "deleteMessage and deleteForumTopic duplicate identical fetch/abort/parse boilerplate instead of reusing existing private request helper"
+        },
+        {
+          "file": "src/cli/chatClear.ts",
+          "line": 45,
+          "severity": "P2",
+          "category": "bug",
+          "summary": "timeoutMs calculation Math.max(15_000, last * 200) can overflow or become NaN if last is extremely large, and lacks upper bound"
+        },
+        {
+          "file": "src/cli/http.ts",
+          "line": 60,
+          "severity": "P2",
+          "category": "convention",
+          "summary": "loadConfig() called on every kuroFetch invocation — should be cached or passed in to avoid repeated disk reads"
+        },
+        {
+          "file": "src/cli/http.ts",
+          "line": 100,
+          "severity": "P2",
+          "category": "bug",
+          "summary": "handleFetchError only checks err.code and err.cause.code but Node fetch errors may nest deeper (err.cause.cause.code) for ECONNREFUSED"
+        },
+        {
+          "file": "src/cli/gaming.ts",
+          "line": 11,
+          "severity": "P2",
+          "category": "convention",
+          "summary": "kuroFetch result body typed with union then cast via 'as' — loses type safety; should use generic type parameter properly"
+        },
+        {
+          "file": "src/daemon/routes.ts",
+          "line": 0,
+          "severity": "P1",
+          "category": "spec",
+          "summary": "Spec requires new daemon endpoints POST /v1/topics/clear and POST /v1/chat/clear but file changes are not in diff — implementation missing from PR"
+        }
+      ]
+    },
+    {
+      "provider": "file://providers/cli-claude-sonnet.cjs",
+      "lineage": "Anthropic",
+      "pr": "#21",
+      "success": true,
+      "findingsCount": 9,
+      "findings": [
+        {
+          "file": "src/daemon/routes.ts",
+          "line": 0,
+          "severity": "P0",
+          "category": "spec",
+          "summary": "New daemon endpoints `/v1/topics/clear` and `/v1/chat/clear` required by M3 and M4 are absent from the diff; `topicsClearCommand` and `chatClearCommand` will receive 404 from the daemon at runtime."
+        },
+        {
+          "file": "src/cli/sleepingCleanup.ts",
+          "line": 0,
+          "severity": "P1",
+          "category": "spec",
+          "summary": "M2 implementation file is not in the diff but is imported by `index.ts`; Node will throw `ERR_MODULE_NOT_FOUND` for any `sleeping cleanup` invocation."
+        },
+        {
+          "file": "src/cli/topicsClear.ts",
+          "line": 0,
+          "severity": "P1",
+          "category": "spec",
+          "summary": "M3 implementation file is not in the diff but is imported by `index.ts`; same `ERR_MODULE_NOT_FOUND` failure as sleepingCleanup."
+        },
+        {
+          "file": "src/daemon/sleepFinish.ts",
+          "line": 0,
+          "severity": "P1",
+          "category": "spec",
+          "summary": "M1 (replace `humanise(slug)` with spec H1 extraction for PR titles) is absent from the diff; the primary task the spec calls out as independently shippable is not implemented."
+        },
+        {
+          "file": "src/cli/ohayo.ts",
+          "line": 0,
+          "severity": "P1",
+          "category": "spec",
+          "summary": "M5 PTY refactor is not in the diff; `index.ts` registers the `--tmux` option and passes `opts` to `ohayoCommand(opts)`, but the `ohayoCommand` implementation change is missing, so the function still runs the tmux path unconditionally."
+        },
+        {
+          "file": "src/cli/http.ts",
+          "line": 93,
+          "severity": "P1",
+          "category": "bug",
+          "summary": "`handleFetchError` checks `err.code` / `err.cause?.code` for string values `ECONNREFUSED` and `ETIMEDOUT`, but an `AbortController` timeout throws a `DOMException` (`name === 'AbortError'`, no string `.code`) — self-imposed timeouts propagate as unhandled errors instead of printing the user-friendly 'daemon offline' message the spec requires for slow/unreachable daemons."
+        },
+        {
+          "file": "src/channels/telegram/TelegramChannel.ts",
+          "line": 175,
+          "severity": "P1",
+          "category": "silent-failure",
+          "summary": "In the `isThreadNotFoundError` catch branch of `clearTopics`, `this.topicManager.purge(key).catch(() => {})` silently swallows disk-write failures; a failed purge leaves the stale `threadId` in the cache while the method reports the key as `cleared`, so the next send recreates a new topic that never appears in subsequent `topics clear` listings."
+        },
+        {
+          "file": "test/unit/cli/",
+          "line": 0,
+          "severity": "P1",
+          "category": "test-gap",
+          "summary": "Zero test files appear in the diff; the spec test plan requires kuroFetch.test.ts, chatClear.test.ts, topicsClear.test.ts, sleepingCleanup.test.ts, and daemon integration extensions for the two new routes."
+        },
+        {
+          "file": "src/channels/telegram/TelegramChannel.ts",
+          "line": 210,
+          "severity": "P2",
+          "category": "bug",
+          "summary": "`clearLastMessages` declares a `survivors` array whose usage is in the 22-line truncated block; if successfully-deleted IDs are not removed from `sentMessages` after the loop, subsequent `chat clear` calls will retry Telegram deletes on already-deleted messages (harmless but wasteful and misleading in output counts)."
+        }
+      ]
+    },
+    {
+      "provider": "zen-glm-5",
+      "lineage": "Zhipu",
+      "pr": "#19",
+      "success": false,
+      "parseError": "1",
+      "findingsCount": 0,
+      "findings": []
+    },
+    {
+      "provider": "file://providers/cli-claude-opus.cjs",
+      "lineage": "Anthropic",
+      "pr": "#19",
+      "success": true,
+      "findingsCount": 5,
+      "findings": [
+        {
+          "file": "test/unit/cli/allowlist.test.ts",
+          "line": 51,
+          "severity": "P2",
+          "category": "test-gap",
+          "summary": "Malformed JSON test only asserts the function throws; spec test plan says 'prints error, exits 1' — actual user-facing exit-code path is not verified, so a regression that loses the catch/exit wrapper would still pass."
+        },
+        {
+          "file": "test/helpers/cliHarness.ts",
+          "line": 85,
+          "severity": "P2",
+          "category": "convention",
+          "summary": "captureIO merges process.stdout.write and console.log into the same array; commands that incorrectly send user output to stderr (or vice versa) could still satisfy out()/err() assertions when interleaved, weakening the harness's stream-discipline guarantees."
+        },
+        {
+          "file": "test/unit/cli/audit.test.ts",
+          "line": 34,
+          "severity": "P2",
+          "category": "test-gap",
+          "summary": "vi.spyOn(auditModule,'readAudit') relies on cli/audit.ts accessing readAudit through a live ESM namespace binding; if the consumer uses a direct named import, the spy won't intercept and tests would silently exercise the real filesystem reader — safer to vi.mock the module."
+        },
+        {
+          "file": "test/unit/cli/mode.test.ts",
+          "line": 24,
+          "severity": "P2",
+          "category": "test-gap",
+          "summary": "Same vi.spyOn(stateModule,'saveMode') fragility as audit — if mode.ts imports saveMode directly, the spy may not replace the binding and tests could write to the real ~/.kuroboto/state.json; vi.mock would be more robust."
+        },
+        {
+          "file": "test/unit/cli/mode.test.ts",
+          "line": 48,
+          "severity": "P2",
+          "category": "spec",
+          "summary": "Spec says mode 'writes to state.json first, then best-effort PUTs' — tests assert both occurred but never assert ordering, so a regression that PUTs before persisting (and crashes mid-PUT) wouldn't be caught."
+        }
+      ]
+    },
+    {
+      "provider": "file://providers/cli-gemini.cjs",
+      "lineage": "Google",
+      "pr": "#19",
+      "success": true,
+      "findingsCount": 0,
+      "findings": []
+    },
+    {
+      "provider": "file://providers/cli-claude-sonnet.cjs",
+      "lineage": "Anthropic",
+      "pr": "#19",
+      "success": true,
+      "findingsCount": 4,
+      "findings": [
+        {
+          "file": "test/unit/cli/sleeping.test.ts",
+          "line": 1,
+          "severity": "P1",
+          "category": "spec",
+          "summary": "File is entirely truncated in the diff; spec mandates ~15 test cases including 'cancel --yes multi-active silently picks most-recent', 'start --plan + PLAN_INTRO behavior', and both mutual-exclusion guards (both flags given / neither given) — cannot verify spec coverage for the highest-surface-area command group, which is the M1 deliverable."
+        },
+        {
+          "file": "test/unit/cli/allowlist.test.ts",
+          "line": 56,
+          "severity": "P2",
+          "category": "test-gap",
+          "summary": "Malformed JSON test only asserts rejects.toThrow(); spec says 'prints error, exits 1' — neither the error message content nor the exit code is asserted, so the spec's stated behavior for that case is unverified."
+        },
+        {
+          "file": "test/helpers/cliHarness.ts",
+          "line": 37,
+          "severity": "P2",
+          "category": "bug",
+          "summary": "Header extraction casts init.headers to Record<string,string> and iterates with Object.keys(); if CLI code passes a Headers instance, Object.keys() returns [] and all headers are silently dropped, causing expectAuthHeader to vacuously pass."
+        },
+        {
+          "file": "test/unit/cli/gaming.test.ts",
+          "line": 52,
+          "severity": "P2",
+          "category": "bug",
+          "summary": "toMatch(/15m remaining/) and /2h remaining/ depend on Date.now() being called at render time matching the stub setup instant; if the CLI computes remaining via Math.floor and any milliseconds elapse between stub setup and the render call, output shows '14m remaining' — flaky under CI load."
+        }
+      ]
+    },
+    {
+      "provider": "file://providers/cli-copilot.cjs",
+      "lineage": "GitHub-wrapped",
+      "pr": "#19",
+      "success": true,
+      "findingsCount": 9,
+      "findings": [
+        {
+          "file": "test/helpers/cliHarness.ts",
+          "line": 20,
+          "severity": "P1",
+          "category": "bug",
+          "summary": "stubFetch's header extraction assumes init.headers is a plain object and will miss headers when a Headers instance or other shape is passed, making auth/header assertions flaky."
+        },
+        {
+          "file": "test/helpers/cliHarness.ts",
+          "line": 32,
+          "severity": "P2",
+          "category": "convention",
+          "summary": "stripAnsi uses a limited regex that won't remove all ANSI sequences; test assertions that strip ANSI may still observe leftover control codes in some outputs."
+        },
+        {
+          "file": "test/helpers/cliHarness.ts",
+          "line": 60,
+          "severity": "P2",
+          "category": "bug",
+          "summary": "captureIO spies on process.stdout/process.stderr and console.log/console.error but relies on tests to call vi.restoreAllMocks; missing a helper-level restore increases risk of cross-test interference if callers forget restore."
+        },
+        {
+          "file": "test/unit/cli/gaming.test.ts",
+          "line": 44,
+          "severity": "P1",
+          "category": "bug",
+          "summary": "Uses vi.unstubAllGlobals() in afterEach — this API may not exist in the project's Vitest version and will cause test runtime failures; inconsistent cleanup across tests is risky."
+        },
+        {
+          "file": "test/unit/cli/mode.test.ts",
+          "line": 44,
+          "severity": "P1",
+          "category": "bug",
+          "summary": "Also calls vi.unstubAllGlobals(); if this helper is unavailable tests will error, breaking the suite (same issue as gaming.test.ts)."
+        },
+        {
+          "file": "docs/specs/cli-tests.md",
+          "line": 127,
+          "severity": "P1",
+          "category": "spec",
+          "summary": "Spec text is inconsistent: some lines state audit uses GET /v1/audit (daemon), while other inserted lines say audit reads the filesystem directly; this ambiguity changes expected test behavior and must be clarified."
+        },
+        {
+          "file": "docs/specs/cli-tests.md",
+          "line": 146,
+          "severity": "P1",
+          "category": "spec",
+          "summary": "Spec changes to mode behavior (local-first with best-effort PUT) conflict with earlier lines that treat daemon failure as exit-failure; the test plan and spec must consistently document fallback semantics."
+        },
+        {
+          "file": "test/unit/cli/allowlist.test.ts",
+          "line": 1,
+          "severity": "P1",
+          "category": "spec",
+          "summary": "Tests assert Portuguese user-facing strings (e.g. '(nenhum .claude/settings.local.json em', '(allowlist vazia)') whereas the spec and other docs are English — localization mismatch may hide regressions or cause CI flakes if messages change."
+        },
+        {
+          "file": "test/helpers/cliHarness.ts",
+          "line": 10,
+          "severity": "P2",
+          "category": "test-gap",
+          "summary": "jsonResponse returns a global Response object; test run assumes global Response exists (Node fetch API). If the CI environment lacks a global Response, tests will fail — consider using a small Response shim or returning an object matching what code expects."
+        }
+      ]
+    },
+    {
+      "provider": "file://providers/cli-codex.cjs",
+      "lineage": "OpenAI",
+      "pr": "#19",
+      "success": true,
+      "findingsCount": 3,
+      "findings": [
+        {
+          "file": "test/unit/cli/allowlist.test.ts",
+          "line": 36,
+          "severity": "P2",
+          "category": "test-gap",
+          "summary": "The allowlist list coverage does not exercise the spec-required deny entries, so regressions in deny rendering would pass."
+        },
+        {
+          "file": "test/unit/cli/allowlist.test.ts",
+          "line": 22,
+          "severity": "P2",
+          "category": "test-gap",
+          "summary": "The allowlist list coverage never exercises the default cwd path required by the spec for `kuroboto allowlist list` with no path argument."
+        },
+        {
+          "file": "test/unit/cli/allowlist.test.ts",
+          "line": 48,
+          "severity": "P2",
+          "category": "spec",
+          "summary": "The malformed JSON case only asserts rejection instead of the spec-required CLI behavior of printing an error and exiting 1."
+        }
+      ]
+    },
+    {
+      "provider": "ollama-deepseek-coder-6.7b",
+      "lineage": "DeepSeek",
+      "pr": "#19",
+      "success": true,
+      "findingsCount": 3,
+      "findings": [
+        {
+          "file": "src/path/to/file.ts",
+          "line": 123,
+          "severity": "P0",
+          "category": "bug",
+          "summary": "Daemon crashes when receiving a message"
+        },
+        {
+          "file": "src/path/to/another_file.ts",
+          "line": 456,
+          "severity": "P1",
+          "category": "security",
+          "summary": "Command injection vulnerability in the claude command"
+        },
+        {
+          "file": "src/path/to/yet_another_file.ts",
+          "line": 789,
+          "severity": "P2",
+          "category": "spec",
+          "summary": "The diff does not implement the spec described in the test plan"
+        }
+      ]
+    },
+    {
+      "provider": "zen-minimax-m2.7",
+      "lineage": "Minimax",
+      "pr": "#19",
+      "success": true,
+      "findingsCount": 2,
+      "findings": [
+        {
+          "file": "test/unit/cli/gaming.test.ts",
+          "line": 126,
+          "severity": "P1",
+          "category": "test-gap",
+          "summary": "The spec lists 'daemon offline → fetch fails → exits 1 with daemon-down message' as a required gaming test case, but it is absent from the visible test file. The truncated diff (126 lines) may hide it in the final lines, but given the spec explicitly lists ~8 tests and the visible set covers only on/off/duration/status, the offline scenario likely needs to be added."
+        },
+        {
+          "file": "test/unit/cli/audit.test.ts",
+          "line": 111,
+          "severity": "P2",
+          "category": "spec",
+          "summary": "The diff updates the spec text to say 'reads filesystem directly', and the tests correctly stub `readAudit` rather than `fetch` — consistent. However, the spec behavior line 'daemon offline → fetch fails → exits 1' is removed but not replaced with a corresponding filesystem-error scenario (e.g., audit.jsonl unreadable). The spec's test plan should clarify that daemon-offline is a non-issue for audit (no HTTP involved) and instead cover the actual failure mode: file read errors exit 1."
+        }
+      ]
+    },
+    {
+      "provider": "ollama-qwen2.5-coder",
+      "lineage": "Alibaba",
+      "pr": "#19",
+      "success": true,
+      "findingsCount": 2,
+      "findings": [
+        {
+          "file": "test/unit/cli/allowlist.test.ts",
+          "line": 10,
+          "severity": "P2",
+          "category": "convention",
+          "summary": "Test file name should follow the pattern 'cli_allowlist_test.ts'"
+        },
+        {
+          "file": "test/unit/cli/mode.test.ts",
+          "line": 34,
+          "severity": "P2",
+          "category": "convention",
+          "summary": "Test function names should be in camelCase, e.g., 'hereCommand' instead of 'HereCommand'"
+        }
+      ]
+    },
+    {
+      "provider": "zen-kimi-k2.6",
+      "lineage": "Moonshot",
+      "pr": "#19",
+      "success": true,
+      "findingsCount": 10,
+      "findings": [
+        {
+          "file": "test/helpers/cliHarness.ts",
+          "line": 1,
+          "severity": "P1",
+          "category": "bug",
+          "summary": "Missing `afterEach` cleanup for `vi.stubGlobal('fetch', ...)` — tests that stub fetch but don't call `vi.unstubAllGlobals()` in afterEach will leak the stub to subsequent tests, causing hard-to-debug failures in unrelated test files."
+        },
+        {
+          "file": "test/unit/cli/allowlist.test.ts",
+          "line": 1,
+          "severity": "P1",
+          "category": "spec",
+          "summary": "Spec requires testing `list` with missing settings file prints '(empty)' and exits 0, but test asserts on '(nenhum .claude/settings.local.json em' — this is a Portuguese placeholder, not the '(empty)' string specified in the spec. Also missing test for `list /path` (explicit path argument)."
+        },
+        {
+          "file": "test/unit/cli/allowlist.test.ts",
+          "line": 1,
+          "severity": "P1",
+          "category": "spec",
+          "summary": "Spec requires `export` test for JSON dump of parsed entries, but tests only verify `{}` for missing settings and full settings object for present settings. Missing test for malformed JSON in export path (spec says 'prints error, exits 1')."
+        },
+        {
+          "file": "test/unit/cli/audit.test.ts",
+          "line": 1,
+          "severity": "P1",
+          "category": "spec",
+          "summary": "Spec requires `daemon offline → fetch fails → exits 1` but audit tests never stub fetch (they stub `readAudit` instead). The spec was updated to clarify audit reads filesystem directly, but the test plan still lists 'daemon offline' case which is impossible since there's no HTTP call. This is a spec/test mismatch — either the test plan should be updated or the test should verify readAudit throws (e.g., file permission error)."
+        },
+        {
+          "file": "test/unit/cli/mode.test.ts",
+          "line": 1,
+          "severity": "P1",
+          "category": "spec",
+          "summary": "Spec requires `daemon returns non-2xx → still saves locally, includes HTTP code in fallback message` — test uses 500 status but only asserts '500' appears in output, not that the local save still occurred (saveModeSpy is checked, but not that state.json was actually written with correct content)."
+        },
+        {
+          "file": "test/unit/cli/sleeping.test.ts",
+          "line": 1,
+          "severity": "P0",
+          "category": "test-gap",
+          "summary": "PR diff is truncated — cannot verify the most critical test file (sleeping.test.ts) which has the most surface area and complex interactions (prompts mocking, cancel flows, capacity handling). Without seeing the full sleeping.test.ts, cannot confirm P0-level concerns like: cancel --yes with multiple active picks most-recent, start rejects when both --prompt and --plan given, start at capacity renders active list and exits 1."
+        },
+        {
+          "file": "test/helpers/cliHarness.ts",
+          "line": 1,
+          "severity": "P1",
+          "category": "convention",
+          "summary": "`captureIO` spies on `process.stdout.write`, `process.stderr.write`, `console.log`, and `console.error` but never restores them — `vi.restoreAllMocks()` in afterEach will restore, but if a test throws before reaching afterEach, the spies remain mocked. Should use `vi.spyOn(...).mockImplementation(...)` with cleanup in a returned teardown or rely on vitest's automatic cleanup (which requires `mockRestore: true` in config)."
+        },
+        {
+          "file": "test/unit/cli/gaming.test.ts",
+          "line": 1,
+          "severity": "P1",
+          "category": "spec",
+          "summary": "Spec says `status` (active) should print 'gaming: active' + remaining if has timer, but test asserts on 'gaming on' and '15m remaining' — the exact string 'gaming: active' is not verified. Need to confirm output format matches spec exactly."
+        },
+        {
+          "file": "test/unit/cli/gaming.test.ts",
+          "line": 1,
+          "severity": "P1",
+          "category": "spec",
+          "summary": "Missing test for `daemon offline → fetch fails → exits 1 with daemon-down message` — the spec lists this but only 'status (off)' and 'status (active with timer)' are visible in truncated diff. Cannot confirm daemon offline case is tested."
+        },
+        {
+          "file": "test/helpers/cliHarness.ts",
+          "line": 1,
+          "severity": "P2",
+          "category": "convention",
+          "summary": "`stripAnsi` uses `/\u001b[[0-9;]*m/g` which doesn't match all ANSI sequences (e.g., cursor movement, clear screen, 256-color codes `\u001b[38;5;Nm`). For CLI output testing this is probably sufficient, but could miss edge cases."
+        }
+      ]
+    }
+  ]
+}
