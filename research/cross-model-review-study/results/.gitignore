@@ -1,0 +1,8 @@
+# Promptfoo raw eval output is large (smoke files were ~600-800 KB each).
+# Keep them out of git — only the analyze.ts-generated digest belongs in
+# version control.
+*.json
+!findings.json
+
+# Smoke runs are throwaway; never commit them.
+smoke-*.json

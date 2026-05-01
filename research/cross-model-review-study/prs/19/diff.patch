@@ -1,0 +1,510 @@
+
+docs/specs/cli-tests.md
+  @@ -127,12 +127,14 @@ expect(exitSpy).toHaveBeenCalledWith(0);
+  -- `list` (no args) → GET /v1/audit, prints last 10 entries (default limit)
+  -- `list --since 5m` → query param `sinceMs=300000`
+  -- `list --cwd /path` → query param `cwd=/path`
+  -- `list --limit 50` → query param `limit=50`
+  -- `export` → GET, prints raw JSONL to stdout (machine-readable)
+  -- daemon offline → fetch fails → exits 1
+  +(Like `allowlist`, this command reads filesystem directly — `~/.kuroboto/audit.jsonl` — instead of going through the daemon. That keeps `kuroboto audit list` usable for diagnostics even when the daemon is offline. Tests stub `readAudit` rather than `fetch`.)
+  +
+  +- `list` (no args) → calls `readAudit({})`, prints last entries
+  +- `list --since 5m` → forwards `sinceMs=300000`
+  +- `list --cwd /path` → forwards `cwd=/path`
+  +- `list --limit 50` → forwards `limit=50`
+  +- `export` → prints raw JSONL to stdout (machine-readable)
+  +- empty log → prints `(sem entradas)` placeholder
+   
+   ### `allowlist.test.ts` (~5 tests)
+   
+  @@ -146,10 +148,12 @@ expect(exitSpy).toHaveBeenCalledWith(0);
+  -- `kuroboto here` → PUT /v1/mode `{mode: 'here'}`, prints "mode: here"
+  -- `kuroboto away` → PUT /v1/mode `{mode: 'away'}`, prints "mode: away"
+  -- daemon offline (here) → exits 1
+  -- daemon returns 4xx → prints error from body
+  +(`mode` writes to `~/.kuroboto/state.json` first, then best-effort PUTs `/v1/mode` so the running daemon picks up the change immediately. Daemon-offline is a soft failure here — the local change persists and the next daemon start will read it.)
+  +
+  +- `kuroboto here` → saves locally, PUTs `/v1/mode {mode: 'here'}`, prints "mode set to here"
+  +- `kuroboto away` → saves locally, PUTs `/v1/mode {mode: 'away'}`, prints "mode set to away"
+  +- daemon offline (here) → still saves locally and reports `daemon offline` fallback (no exit 1)
+  +- daemon returns non-2xx → still saves locally, includes HTTP code in fallback message
+   
+   ## Behavior details / conventions
+   
+  +14 -10
+
+test/helpers/cliHarness.ts
+  @@ -0,0 +1,157 @@
+  +import { vi, expect } from 'vitest';
+  +import type { ConfigT } from '../../src/config/schema.js';
+  +
+  +const ANSI_RE = /\x1b\[[0-9;]*m/g;
+  +
+  +export function stripAnsi(s: string): string {
+  +  return s.replace(ANSI_RE, '');
+  +}
+  +
+  +export interface FetchCall {
+  +  url: string;
+  +  method: string;
+  +  headers: Record<string, string>;
+  +  body: unknown;
+  +}
+  +
+  +export type FetchHandler = (
+  +  url: string,
+  +  init?: RequestInit,
+  +) => Response | Promise<Response>;
+  +
+  +export interface FetchStub {
+  +  calls: FetchCall[];
+  +  mock: ReturnType<typeof vi.fn>;
+  +}
+  +
+  +/**
+  + * Replace global.fetch with a vi.fn that delegates to the supplied handler.
+  + * Each call is recorded for assertions in `calls`.
+  + */
+  +export function stubFetch(handler: FetchHandler): FetchStub {
+  +  const calls: FetchCall[] = [];
+  +  const mock = vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
+  +    const url = typeof input === 'string' ? input : input.toString();
+  +    const method = (init?.method ?? 'GET').toUpperCase();
+  +    const headers: Record<string, string> = {};
+  +    if (init?.headers) {
+  +      const h = init.headers as Record<string, string>;
+  +      for (const k of Object.keys(h)) headers[k] = h[k]!;
+  +    }
+  +    let body: unknown = undefined;
+  +    if (typeof init?.body === 'string') {
+  +      try {
+  +        body = JSON.parse(init.body);
+  +      } catch {
+  +        body = init.body;
+  +      }
+  +    }
+  +    calls.push({ url, method, headers, body });
+  +    return handler(url, init);
+  +  });
+  +  vi.stubGlobal('fetch', mock);
+  +  return { calls, mock };
+  +}
+  +
+  +export function jsonResponse(body: unknown, status = 200): Response {
+  +  return new Response(JSON.stringify(body), {
+  +    status,
+  +    headers: { 'Content-Type': 'application/json' },
+  +  });
+  +}
+  +
+  +export interface CapturedIO {
+  +  stdout: string[];
+  +  stderr: string[];
+  +  out(): string;
+  +  err(): string;
+  +}
+  +
+  +/**
+  + * Capture every write to process.stdout / process.stderr AND every console.log /
+  + * console.error call. Vitest intercepts console.* directly (not via stdout.write),
+  + * so we must spy on both layers to cover commands that mix the two (`auditExport`
+  + * uses `process.stdout.write`, while everyone else uses `console.log`).
+  + *
+  + * Strip ANSI in the convenience `out()` / `err()` accessors.
+  + */
+  +export function captureIO(): CapturedIO {
+  +  const stdout: string[] = [];
+  +  const stderr: string[] = [];
+  +  vi.spyOn(process.stdout, 'write').mockImplementation(((chunk: string | Uint8Array) => {
+  +    stdout.push(typeof chunk === 'string' ? chunk : Buffer.from(chunk).toString());
+  +    return true;
+  +  }) as never);
+  +  vi.spyOn(process.stderr, 'write').mockImplementation(((chunk: string | Uint8Array) => {
+  +    stderr.push(typeof chunk === 'string' ? chunk : Buffer.from(chunk).toString());
+  +    return true;
+  +  }) as never);
+  +  vi.spyOn(console, 'log').mockImplementation((...args: unknown[]) => {
+  +    stdout.push(args.map((a) => (typeof a === 'string' ? a : String(a))).join(' ') + '\n');
+  +  });
+  +  vi.spyOn(console, 'error').mockImplementation((...args: unknown[]) => {
+  +    stderr.push(args.map((a) => (typeof a === 'string' ? a : String(a))).join(' ') + '\n');
+  +  });
+  +  return {
+  +    stdout,
+  +    stderr,
+  +    out: () => stripAnsi(stdout.join('')),
+  +    err: () => stripAnsi(stderr.join('')),
+  +  };
+  ... (57 lines truncated)
+  +157 -0
+
+test/unit/cli/allowlist.test.ts
+  @@ -0,0 +1,76 @@
+  +import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+  +import fsp from 'node:fs/promises';
+  +import path from 'node:path';
+  +import os from 'node:os';
+  +import { captureIO } from '../../helpers/cliHarness.js';
+  +import { allowlistList, allowlistExport } from '../../../src/cli/allowlist.js';
+  +
+  +describe('cli/allowlist', () => {
+  +  let io: ReturnType<typeof captureIO>;
+  +  let tmpDir: string;
+  +
+  +  beforeEach(async () => {
+  +    io = captureIO();
+  +    tmpDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'kuroboto-cli-allowlist-'));
+  +  });
+  +  afterEach(async () => {
+  +    vi.restoreAllMocks();
+  +    await fsp.rm(tmpDir, { recursive: true, force: true });
+  +  });
+  +
+  +  async function writeSettings(content: string): Promise<void> {
+  +    await fsp.mkdir(path.join(tmpDir, '.claude'), { recursive: true });
+  +    await fsp.writeFile(path.join(tmpDir, '.claude', 'settings.local.json'), content);
+  +  }
+  +
+  +  describe('list', () => {
+  +    it('settings missing: prints placeholder, exits 0', async () => {
+  +      await allowlistList(tmpDir);
+  +      expect(io.out()).toContain('(nenhum .claude/settings.local.json em');
+  +      expect(io.out()).toContain(tmpDir);
+  +    });
+  +
+  +    it('allow array empty: prints "(allowlist vazia)"', async () => {
+  +      await writeSettings(JSON.stringify({ permissions: { allow: [] } }));
+  +      await allowlistList(tmpDir);
+  +      expect(io.out()).toContain('(allowlist vazia)');
+  +    });
+  +
+  +    it('with entries: prints header + one bullet per matcher', async () => {
+  +      await writeSettings(
+  +        JSON.stringify({
+  +          permissions: { allow: ['Bash(npm install:*)', 'Edit'] },
+  +        }),
+  +      );
+  +      await allowlistList(tmpDir);
+  +      const out = io.out();
+  +      expect(out).toContain('allowlist em');
+  +      expect(out).toContain('settings.local.json');
+  +      expect(out).toContain('Bash(npm install:*)');
+  +      expect(out).toContain('Edit');
+  +    });
+  +
+  +    it('malformed JSON: rejects (caller wraps to exit 1)', async () => {
+  +      await writeSettings('not-json');
+  +      await expect(allowlistList(tmpDir)).rejects.toThrow();
+  +    });
+  +  });
+  +
+  +  describe('export', () => {
+  +    it('settings missing: emits "{}" so machine readers see empty object', async () => {
+  +      await allowlistExport(tmpDir);
+  +      expect(io.stdout.join('').trim()).toBe('{}');
+  +    });
+  +
+  +    it('with settings: emits pretty-printed JSON of the parsed file', async () => {
+  +      const settings = {
+  +        permissions: { allow: ['Bash(ls:*)'], deny: ['Bash(rm:*)'] },
+  +        env: { FOO: 'bar' },
+  +      };
+  +      await writeSettings(JSON.stringify(settings));
+  +      await allowlistExport(tmpDir);
+  +      const printed = JSON.parse(io.stdout.join('').trim());
+  +      expect(printed).toEqual(settings);
+  +    });
+  +  });
+  +});
+  +76 -0
+
+test/unit/cli/audit.test.ts
+  @@ -0,0 +1,111 @@
+  +import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+  +import { captureIO } from '../../helpers/cliHarness.js';
+  +import * as auditModule from '../../../src/daemon/audit.js';
+  +import type { AuditEntry } from '../../../src/daemon/audit.js';
+  +
+  +import { auditList, auditExport } from '../../../src/cli/audit.js';
+  +
+  +// `audit list/export` reads `~/.kuroboto/audit.jsonl` directly (same pattern
+  +// as `allowlist`) — there's no `/v1/audit` HTTP route. That's intentional so
+  +// audit history stays inspectable when the daemon is offline. Tests therefore
+  +// stub `readAudit` rather than `fetch`.
+  +
+  +function entry(o: Partial<AuditEntry> = {}): AuditEntry {
+  +  return {
+  +    ts: '2026-04-28T10:00:00.000Z',
+  +    requestId: 'r1',
+  +    tool: 'Bash',
+  +    cwd: '/x',
+  +    decision: 'allow',
+  +    reason: null,
+  +    source: 'telegram',
+  +    remember: false,
+  +    ...o,
+  +  };
+  +}
+  +
+  +describe('cli/audit', () => {
+  +  let io: ReturnType<typeof captureIO>;
+  +  let readSpy: ReturnType<typeof vi.spyOn>;
+  +
+  +  beforeEach(() => {
+  +    io = captureIO();
+  +    readSpy = vi.spyOn(auditModule, 'readAudit');
+  +  });
+  +  afterEach(() => {
+  +    vi.restoreAllMocks();
+  +  });
+  +
+  +  describe('list', () => {
+  +    it('no opts: passes empty filter, prints one row per entry', async () => {
+  +      readSpy.mockResolvedValue([
+  +        entry({ requestId: 'r1', tool: 'Bash', cwd: '/x', decision: 'allow' }),
+  +        entry({ requestId: 'r2', tool: 'Edit', cwd: '/y', decision: 'deny', reason: 'no' }),
+  +      ]);
+  +      await auditList({});
+  +      expect(readSpy).toHaveBeenCalledWith({
+  +        sinceMs: undefined,
+  +        cwd: undefined,
+  +        limit: undefined,
+  +      });
+  +      const out = io.out();
+  +      expect(out).toContain('Bash');
+  +      expect(out).toContain('Edit');
+  +      expect(out).toContain('ALLOW');
+  +      expect(out).toContain('DENY');
+  +      expect(out).toContain('cwd=/x');
+  +      expect(out).toContain('cwd=/y');
+  +      expect(out).toContain('reason="no"');
+  +    });
+  +
+  +    it('empty: prints "(sem entradas)" placeholder', async () => {
+  +      readSpy.mockResolvedValue([]);
+  +      await auditList({});
+  +      expect(io.out()).toContain('(sem entradas)');
+  +    });
+  +
+  +    it('--since 5m: translates to sinceMs=300_000', async () => {
+  +      readSpy.mockResolvedValue([]);
+  +      await auditList({ since: '5m' });
+  +      expect(readSpy).toHaveBeenCalledWith(
+  +        expect.objectContaining({ sinceMs: 5 * 60_000 }),
+  +      );
+  +    });
+  +
+  +    it('--cwd /some/path: forwarded as cwd filter', async () => {
+  +      readSpy.mockResolvedValue([]);
+  +      await auditList({ cwd: '/some/path' });
+  +      expect(readSpy).toHaveBeenCalledWith(
+  +        expect.objectContaining({ cwd: '/some/path' }),
+  +      );
+  +    });
+  +
+  +    it('--limit 50: forwarded as numeric limit', async () => {
+  +      readSpy.mockResolvedValue([]);
+  +      await auditList({ limit: '50' });
+  +      expect(readSpy).toHaveBeenCalledWith(
+  +        expect.objectContaining({ limit: 50 }),
+  +      );
+  +    });
+  +
+  +    it('renders ALLOW+R for remember=true entries', async () => {
+  +      readSpy.mockResolvedValue([entry({ decision: 'allow', remember: true })]);
+  +      await auditList({});
+  +      expect(io.out()).toContain('ALLOW+R');
+  +    });
+  +  });
+  +
+  +  describe('export', () => {
+  +    it('prints raw JSONL, one entry per line, machine-parseable', async () => {
+  +      const a = entry({ requestId: 'r1', tool: 'Bash' });
+  ... (11 lines truncated)
+  +111 -0
+
+test/unit/cli/gaming.test.ts
+  @@ -0,0 +1,126 @@
+  +import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+  +import {
+  +  captureIO,
+  +  expectAuthHeader,
+  +  jsonResponse,
+  +  runWithExitCapture,
+  +  stubFetch,
+  +  TEST_CONFIG,
+  +  type FetchStub,
+  +} from '../../helpers/cliHarness.js';
+  +
+  +vi.mock('../../../src/config/load.js', () => ({
+  +  loadConfig: vi.fn(async () => TEST_CONFIG),
+  +}));
+  +
+  +import {
+  +  gamingOnCommand,
+  +  gamingOffCommand,
+  +  gamingStatusCommand,
+  +} from '../../../src/cli/gaming.js';
+  +
+  +describe('cli/gaming', () => {
+  +  let io: ReturnType<typeof captureIO>;
+  +  let fetchStub: FetchStub;
+  +
+  +  beforeEach(() => {
+  +    io = captureIO();
+  +  });
+  +  afterEach(() => {
+  +    vi.unstubAllGlobals();
+  +    vi.restoreAllMocks();
+  +  });
+  +
+  +  it('on (no duration): PUT {on:true}, prints "gaming on (no timer ...)" and sends auth header', async () => {
+  +    fetchStub = stubFetch(() =>
+  +      jsonResponse({ ok: true, active: true, until: null }),
+  +    );
+  +    await gamingOnCommand();
+  +    expect(fetchStub.calls).toHaveLength(1);
+  +    const call = fetchStub.calls[0]!;
+  +    expect(call.method).toBe('PUT');
+  +    expect(call.url).toContain('/v1/gaming');
+  +    expect(call.body).toEqual({ on: true, durationMs: undefined });
+  +    expect(io.out()).toContain('gaming on');
+  +    expect(io.out()).toContain('no timer');
+  +    expectAuthHeader(fetchStub);
+  +  });
+  +
+  +  it('on 15m: durationMs=900_000, prints remaining', async () => {
+  +    const future = Date.now() + 15 * 60_000;
+  +    fetchStub = stubFetch(() =>
+  +      jsonResponse({ ok: true, active: true, until: future }),
+  +    );
+  +    await gamingOnCommand('15m');
+  +    expect(fetchStub.calls[0]!.body).toMatchObject({
+  +      on: true,
+  +      durationMs: 15 * 60_000,
+  +    });
+  +    expect(io.out()).toMatch(/15m remaining/);
+  +  });
+  +
+  +  it('on 2h: durationMs=7_200_000', async () => {
+  +    const future = Date.now() + 2 * 3_600_000;
+  +    fetchStub = stubFetch(() =>
+  +      jsonResponse({ ok: true, active: true, until: future }),
+  +    );
+  +    await gamingOnCommand('2h');
+  +    expect(fetchStub.calls[0]!.body).toMatchObject({
+  +      on: true,
+  +      durationMs: 2 * 3_600_000,
+  +    });
+  +    expect(io.out()).toMatch(/2h remaining/);
+  +  });
+  +
+  +  it('on bad: parseDuration error → exits 1', async () => {
+  +    fetchStub = stubFetch(() =>
+  +      jsonResponse({ ok: true, active: true, until: null }),
+  +    );
+  +    const r = await runWithExitCapture(() => gamingOnCommand('not-a-duration'));
+  +    expect(r.exitCode).toBe(1);
+  +    expect(fetchStub.calls).toHaveLength(0);
+  +    expect(io.err().toLowerCase()).toMatch(/duration|invalid/);
+  +  });
+  +
+  +  it('off: PUT {on:false}, prints "gaming off"', async () => {
+  +    fetchStub = stubFetch(() =>
+  +      jsonResponse({ ok: true, active: false, until: null }),
+  +    );
+  +    await gamingOffCommand();
+  +    expect(fetchStub.calls[0]!.body).toEqual({ on: false, durationMs: undefined });
+  +    expect(io.out()).toContain('gaming off');
+  +  });
+  +
+  +  it('status (off): GET, prints "gaming: off"', async () => {
+  +    fetchStub = stubFetch(() => jsonResponse({ active: false, until: null }));
+  +    await gamingStatusCommand();
+  +    expect(fetchStub.calls[0]!.method).toBe('GET');
+  +    expect(io.out()).toContain('gaming: off');
+  +  });
+  +
+  ... (26 lines truncated)
+  +126 -0
+
+test/unit/cli/mode.test.ts
+  @@ -0,0 +1,71 @@
+  +import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+  +import {
+  +  captureIO,
+  +  expectAuthHeader,
+  +  jsonResponse,
+  +  stubFetch,
+  +  TEST_CONFIG,
+  +  type FetchStub,
+  +} from '../../helpers/cliHarness.js';
+  +import * as stateModule from '../../../src/daemon/state.js';
+  +
+  +vi.mock('../../../src/config/load.js', () => ({
+  +  loadConfig: vi.fn(async () => TEST_CONFIG),
+  +}));
+  +
+  +import { hereCommand, awayCommand } from '../../../src/cli/mode.js';
+  +
+  +describe('cli/mode', () => {
+  +  let io: ReturnType<typeof captureIO>;
+  +  let saveModeSpy: ReturnType<typeof vi.spyOn>;
+  +  let fetchStub: FetchStub;
+  +
+  +  beforeEach(() => {
+  +    io = captureIO();
+  +    saveModeSpy = vi.spyOn(stateModule, 'saveMode').mockResolvedValue(undefined);
+  +  });
+  +  afterEach(() => {
+  +    vi.unstubAllGlobals();
+  +    vi.restoreAllMocks();
+  +  });
+  +
+  +  it('here: persists mode locally, PUTs /v1/mode, prints "mode set to here" with auth header', async () => {
+  +    fetchStub = stubFetch(() => jsonResponse({ ok: true }));
+  +    await hereCommand();
+  +    expect(saveModeSpy).toHaveBeenCalledWith('here');
+  +    const call = fetchStub.calls[0]!;
+  +    expect(call.method).toBe('PUT');
+  +    expect(call.url).toContain('/v1/mode');
+  +    expect(call.body).toEqual({ mode: 'here' });
+  +    expect(io.out()).toContain('mode set to here');
+  +    expectAuthHeader(fetchStub);
+  +  });
+  +
+  +  it('away: persists mode locally, PUTs /v1/mode, prints "mode set to away"', async () => {
+  +    fetchStub = stubFetch(() => jsonResponse({ ok: true }));
+  +    await awayCommand();
+  +    expect(saveModeSpy).toHaveBeenCalledWith('away');
+  +    expect(fetchStub.calls[0]!.body).toEqual({ mode: 'away' });
+  +    expect(io.out()).toContain('mode set to away');
+  +  });
+  +
+  +  it('daemon offline: still saves locally and reports fallback', async () => {
+  +    stubFetch(() => {
+  +      throw new Error('ECONNREFUSED');
+  +    });
+  +    await hereCommand();
+  +    expect(saveModeSpy).toHaveBeenCalledWith('here');
+  +    const out = io.out();
+  +    expect(out).toContain('mode set to here');
+  +    expect(out).toContain('daemon offline');
+  +  });
+  +
+  +  it('daemon returns non-2xx: reports HTTP code in fallback message', async () => {
+  +    fetchStub = stubFetch(() => jsonResponse({ error: 'bad' }, 500));
+  +    await awayCommand();
+  +    expect(saveModeSpy).toHaveBeenCalledWith('away');
+  +    const out = io.out();
+  +    expect(out).toContain('mode set to away');
+  +    expect(out).toContain('500');
+  +  });
+  +});
+  +71 -0
+
+test/unit/cli/sleeping.test.ts
+
+... (more changes truncated)
+[full diff: rtk git diff --no-compact]
