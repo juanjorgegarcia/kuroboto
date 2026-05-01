@@ -8,12 +8,32 @@
 
 ## Problem
 
-Anthropic shipped `/autofix-pr` (Week 13, cloud-side PR review iteration) and
-Routines (Week 16, scheduled cloud agents) — covering ~80% of what kuroboto
-sleep mode + a hypothetical self-healing PR loop would do. The remaining
-differentiation hypothesis: a kuroboto-style loop that uses **a different
-model for the reviewer vs the implementer** catches findings that
-Claude-on-Claude misses. Lineage diversity as a moat.
+Anthropic shipped a near-complete coverage of kuroboto's surface between
+Aug/2025 and Apr/2026 (verified via `code.claude.com/docs/llms.txt` on
+2026-04-30, see `docs/competitive-landscape.md` for the full mapping):
+
+- **`/autofix-pr`** (Week 15) — cloud-side PR fix iteration
+- **Routines** — scheduled / event-triggered cloud agents
+- **Channels** — MCP plugins for Telegram/Discord/iMessage
+- **Remote Control** — mobile session trigger
+- **Ultraplan** — cloud plan drafting and execution
+- **Ultrareview** — multi-agent cloud code review with verified findings
+- **Sandboxing**, **Desktop App parallel sessions**, **Web interface**
+
+**Ultrareview is the most direct competitor** — multi-agent fleet of
+reviewers in a cloud sandbox, "every reported finding is independently
+reproduced and verified". Pricing $5–20 per run after 3 free runs (Pro/Max,
+expiring 2026-05-05). Critical detail per the docs: it runs entirely on
+"Claude Code on the web infrastructure", is unavailable on Bedrock / Vertex /
+Foundry, and never mentions non-Claude models. **It is mono-lineage by
+design** — every reviewer in the fleet shares the same Anthropic training
+corpus and therefore the same blind spots.
+
+The remaining differentiation hypothesis: a kuroboto-style loop that uses
+**different lineages for the reviewer vs the implementer** catches findings
+that any mono-lineage fleet (Claude-on-Claude, GPT-on-GPT) systematically
+misses. Lineage diversity as a quality moat that Anthropic / OpenAI cannot
+ship from inside their own walled gardens.
 
 This hypothesis is unvalidated. Pivoting kuroboto's roadmap on it without
 empirical evidence is a costly bet. A focused study can produce data in
@@ -188,13 +208,25 @@ new provider configs cost tokens.
 
 - **H1 supported (≥20% unique P0/P1 from cross-lineage union vs
   Claude-only baseline, p<0.05 via bootstrap)** → pivot kuroboto roadmap
-  to cross-LLM PR pipeline, write Spec Q' for the implementation.
+  to cross-LLM PR pipeline, write Spec Q' for the implementation. The pitch
+  becomes "finds bugs Ultrareview misses by design" — Anthropic structurally
+  cannot ship this from inside their own infrastructure.
 - **H1 partially supported (10-20% uplift, mixed severity)** → keep
-  cross-LLM as a configurable feature, not headline; maintain current
-  positioning.
+  cross-LLM as a configurable feature, not headline; reposition primary
+  pitch around privacy / sovereignty (ZDR-friendly, since Ultrareview is
+  explicitly blocked for ZDR orgs).
 - **H0 not rejected (<10% unique findings, no statistical significance)** →
-  drop the cross-model angle, focus on existing kuroboto strengths
-  (local-first, gaming mode, Telegram channel for free-tier users).
+  drop the cross-model angle. The remaining moat reduces to "self-hosted
+  Anthropic alternative for data-sovereignty buyers" — smaller market but
+  defensible. See `docs/competitive-landscape.md` for the positioning.
+
+## Existential risk
+
+If Anthropic ships cross-lineage support in Ultrareview (a "bring your own
+Bedrock / Vertex / OpenAI" mode) before this study completes, the
+differentiator collapses entirely regardless of H1/H0. Watch
+`code.claude.com/docs/llms.txt` and the weekly changelog. The competitive
+landscape doc tracks re-validation cadence.
 
 ## Tasks
 
