@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.3.1](https://github.com/juanjorgegarcia/kuroboto/compare/v0.3.0...v0.3.1) (2026-05-01)
+
+
+### Bug Fixes
+
+* **daemon:** permission timeout returns ask, not deny ([#34](https://github.com/juanjorgegarcia/kuroboto/issues/34)) ([da5322d](https://github.com/juanjorgegarcia/kuroboto/commit/da5322d1e2e88e29bf4128db5108fd13749a3622))
+
 ## [0.3.0](https://github.com/juanjorgegarcia/kuroboto/compare/v0.2.0...v0.3.0) (2026-04-30)
 
 
