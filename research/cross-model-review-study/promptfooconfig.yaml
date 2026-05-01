@@ -1,0 +1,141 @@
+description: "Cross-model PR review delta study (Spec R M2) — full corpus (PRs #29, #30, #21, #19) via CLI subprocesses + OpenCode Zen + Ollama"
+
+prompts:
+  - file://prompt.txt
+
+# Three-tier provider strategy:
+#  (1) CLI subprocesses for providers we have OAuth/subscription for
+#      ($0 marginal — uses Anthropic Pro / ChatGPT Plus / Google / GitHub Copilot quota)
+#  (2) OpenCode Zen for China-lineage models we don't have a local CLI for
+#  (3) Ollama for small open-weight controls
+providers:
+  # ─── Tier 1: OAuth CLIs ($0 marginal) ─────────────────────────────────────
+  # Each CLI gets its own thin wrapper file so promptfoo's result.provider.id
+  # is unique per instance — the bare cli-provider.cjs id() override doesn't
+  # propagate through promptfoo's serialization.
+  - id: file://providers/cli-claude-sonnet.cjs
+    label: cli-claude-sonnet-4-6
+    config:
+      command: claude
+      args: ['--print', '--model', 'claude-sonnet-4-6']
+      timeoutMs: 300000
+
+  - id: file://providers/cli-claude-opus.cjs
+    label: cli-claude-opus-4-7
+    config:
+      command: claude
+      args: ['--print', '--model', 'claude-opus-4-7']
+      timeoutMs: 600000
+
+  - id: file://providers/cli-codex.cjs
+    label: cli-codex-default
+    config:
+      command: codex.cmd
+      args: ['exec']
+      timeoutMs: 600000
+      stripPatterns:
+        - pattern: '^[\s\S]*?--------\s*\nuser\s*\n[\s\S]*?\n'
+        - pattern: '\ntokens used[\s\S]*$'
+
+  - id: file://providers/cli-gemini.cjs
+    label: cli-gemini-default
+    config:
+      command: gemini.cmd
+      args: []
+      timeoutMs: 600000
+
+  - id: file://providers/cli-copilot.cjs
+    label: cli-copilot-default
+    config:
+      command: copilot
+      args: []
+      timeoutMs: 600000
+      stripPatterns:
+        - pattern: '\n\s*Changes[\s\S]*$'
+
+  # ─── Tier 2: OpenCode Zen (China-lineage; consumes Zen credits) ───────────
+  # max_tokens 8000 to give kimi/minimax/glm enough room for CoT + JSON.
+  # OPENCODE_ZEN_KEY env var set by run-eval.sh wrapper.
+  # NOTE: Zen rejects max_tokens > 4096 unless stream=true, but promptfoo's
+  # openai provider does not honor `stream` in eval mode (it needs the full
+  # response synchronously). Cap at 4000 — enough for the review JSON output
+  # since reviews rarely emit more than a dozen findings × ~100 tokens.
+  - id: openai:chat:kimi-k2.6
+    label: zen-kimi-k2.6
+    config:
+      apiBaseUrl: https://opencode.ai/zen/v1
+      apiKeyEnvar: OPENCODE_ZEN_KEY
+      max_tokens: 4000
+      temperature: 0.2
+      response_format:
+        type: json_object
+
+  - id: openai:chat:minimax-m2.7
+    label: zen-minimax-m2.7
+    config:
+      apiBaseUrl: https://opencode.ai/zen/v1
+      apiKeyEnvar: OPENCODE_ZEN_KEY
+      max_tokens: 4000
+      temperature: 0.2
+      response_format:
+        type: json_object
+
+  - id: openai:chat:glm-5
+    label: zen-glm-5
+    config:
+      apiBaseUrl: https://opencode.ai/zen/v1
+      apiKeyEnvar: OPENCODE_ZEN_KEY
+      max_tokens: 4000
+      temperature: 0.2
+      response_format:
+        type: json_object
+
+  # ─── Tier 3: Ollama small open-weight controls ($0) ───────────────────────
+  # Constrained by available system memory (~12 GB free on this dev box).
+  # llama3.3 (42 GB) does not fit; dropped. Running deepseek-coder:6.7b
+  # (smoke v5 pass) for the DeepSeek-coder lineage and qwen2.5-coder:latest
+  # for the Alibaba/code-tuned lineage. Both <5GB.
+  - id: ollama:chat:deepseek-coder:6.7b
+    label: ollama-deepseek-coder-6.7b
+    config:
+      num_predict: 8000
+      temperature: 0.2
+
+  - id: ollama:chat:qwen2.5-coder
+    label: ollama-qwen2.5-coder
+    config:
+      num_predict: 8000
+      temperature: 0.2
+
+defaultTest:
+  assert:
+    # Many providers wrap JSON in markdown fences or prefix with prose.
+    # Extract the first {...} block before validating; output discipline
+    # itself is recorded as a finding in the analysis pipeline.
+    - type: is-json
+      transform: output.match(/\{[\s\S]*\}/)?.[0] ?? output
+
+tests:
+  - description: "PR #29 — Bug C watchdog (1.7K LOC, deepest review baseline)"
+    vars:
+      context: file://prs/29/context.md
+      spec: file://prs/29/spec.md
+      diff: file://prs/29/diff.patch
+
+  - description: "PR #30 — Spec G review-fix follow-up (review-of-review loop)"
+    vars:
+      context: file://prs/30/context.md
+      spec: file://prs/30/spec.md
+      diff: file://prs/30/diff.patch
+
+  - description: "PR #21 — CLI improvements bundle (Spec I, multi-file mixed scope)"
+    vars:
+      context: file://prs/21/context.md
+      spec: file://prs/21/spec.md
+      diff: file://prs/21/diff.patch
+
+  - description: "PR #19 — CLI layer tests (Spec H, test-only PR)"
+    vars:
+      context: file://prs/19/context.md
+      spec: file://prs/19/spec.md
+      diff: file://prs/19/diff.patch

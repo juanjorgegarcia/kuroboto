@@ -1,0 +1,520 @@
+
+.github/workflows/ci.yml
+  @@ -7,7 +7,15 @@ on:
+  -    runs-on: ubuntu-latest
+  +    # Cross-platform matrix — kuroboto is dogfooded on macOS + Windows, so CI
+  +    # has to validate parity. Linux-only CI lets win32 / darwin regressions
+  +    # slip through (path separators, signal semantics, child_process.spawn
+  +    # quirks, gh CLI invocation differences).
+  +    strategy:
+  +      fail-fast: false
+  +      matrix:
+  +        os: [ubuntu-latest, macos-latest, windows-latest]
+  +    runs-on: ${{ matrix.os }}
+       steps:
+         - uses: actions/checkout@v4
+         - uses: actions/setup-node@v4
+  @@ -16,7 +24,8 @@ jobs:
+  -      - name: Stub kuroboto config for tests
+  +      - name: Stub kuroboto config for tests (POSIX)
+  +        if: runner.os != 'Windows'
+           # Some tests call loadConfig() which reads ~/.config/kuroboto/config.json.
+           # Local devs have one; CI doesn't. Write a minimal valid config so
+           # those tests get past the load step.
+  @@ -32,5 +41,21 @@ jobs:
+  +      - name: Stub kuroboto config for tests (Windows)
+  +        if: runner.os == 'Windows'
+  +        # PowerShell here-string for parity. ~/.config resolves under USERPROFILE
+  +        # via loadConfig's expandHome path resolution.
+  +        shell: pwsh
+  +        run: |
+  +          $dir = Join-Path $env:USERPROFILE ".config/kuroboto"
+  +          New-Item -ItemType Directory -Force -Path $dir | Out-Null
+  +          @'
+  +          {
+  +            "channel": {"type":"telegram","token":"ci-stub","chatId":1},
+  +            "daemon": {"port":47891,"authToken":"0000000000000000000000000000000000000000000000000000000000000000"},
+  +            "inject": {"enabled":false},
+  +            "policy": {"permissionTimeoutMs":1000,"failOpen":true}
+  +          }
+  +          '@ | Set-Content -Encoding utf8 -Path (Join-Path $dir "config.json")
+         - run: npx vitest run
+         - run: npm run build
+  +27 -2
+
+.github/workflows/claude.yml
+  @@ -0,0 +1,50 @@
+  +name: Claude Code
+  +
+  +on:
+  +  issue_comment:
+  +    types: [created]
+  +  pull_request_review_comment:
+  +    types: [created]
+  +  issues:
+  +    types: [opened, assigned]
+  +  pull_request_review:
+  +    types: [submitted]
+  +
+  +jobs:
+  +  claude:
+  +    if: |
+  +      (github.event_name == 'issue_comment' && contains(github.event.comment.body, '@claude')) ||
+  +      (github.event_name == 'pull_request_review_comment' && contains(github.event.comment.body, '@claude')) ||
+  +      (github.event_name == 'pull_request_review' && contains(github.event.review.body, '@claude')) ||
+  +      (github.event_name == 'issues' && (contains(github.event.issue.body, '@claude') || contains(github.event.issue.title, '@claude')))
+  +    runs-on: ubuntu-latest
+  +    permissions:
+  +      contents: read
+  +      pull-requests: read
+  +      issues: read
+  +      id-token: write
+  +      actions: read # Required for Claude to read CI results on PRs
+  +    steps:
+  +      - name: Checkout repository
+  +        uses: actions/checkout@v4
+  +        with:
+  +          fetch-depth: 1
+  +
+  +      - name: Run Claude Code
+  +        id: claude
+  +        uses: anthropics/claude-code-action@v1
+  +        with:
+  +          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+  +
+  +          # This is an optional setting that allows Claude to read CI results on PRs
+  +          additional_permissions: |
+  +            actions: read
+  +
+  +          # Optional: Give a custom prompt to Claude. If this is not specified, Claude will perform the instructions specified in the comment that tagged it.
+  +          # prompt: 'Update the pull request description to include a summary of changes.'
+  +
+  +          # Optional: Add claude_args to customize behavior and configuration
+  +          # See https://github.com/anthropics/claude-code-action/blob/main/docs/usage.md
+  +          # or https://code.claude.com/docs/en/cli-reference for available options
+  +          # claude_args: '--allowed-tools Bash(gh pr *)'
+  +
+  +50 -0
+
+docs/specs/sleep-mode.md
+  @@ -59,11 +59,46 @@ doesn't need filesystem access to the user's plan). `prompt` is the literal prom
+  -    "sleepWorktreeDir": "~/.kuroboto/worktrees"   // override per platform
+  +    "sleepWorktreeDir": "~/.kuroboto/worktrees",  // override per platform
+  +    "sleepModel": "sonnet"                    // 'sonnet' | 'opus' — see addendum below
+     }
+   }
+   ```
+   
+  +## Addendum 2026-04-30 — `sleepModel` config + `--model` flag
+  +
+  +**Problem.** Sleep spawns `claude -p ...` without pinning a model, so the
+  +spawned process inherits whatever the user has set as their interactive
+  +default in `~/.claude/settings.json`. Many devs leave that on `opus` for
+  +the comfort of the more capable model during interactive work — sleep
+  +inherits the same default and silently burns tokens at ~5× the necessary
+  +rate. Spec-driven sleep work is mostly mechanical execution of an already
+  +fully-written plan; opus's quality bump is largely wasted on this workload.
+  +
+  +**Solution.**
+  +- New config key `policy.sleepModel: 'sonnet' | 'opus'`, default `'sonnet'`.
+  +- New CLI flag `kuroboto sleeping start --model <name>` overriding the
+  +  default per-invocation. Validates against the same enum.
+  +- HTTP `POST /v1/sleeping` accepts `{model?: 'sonnet' | 'opus'}` in the
+  +  body, validates, then forwards to `SleepingOrchestrator.start({model})`.
+  +- `SleepingOrchestrator` constructor accepts `defaultModel` from the
+  +  daemon. The spawn args become
+  +  `['--dangerously-skip-permissions', '--model', model, '-p', prompt]`.
+  +
+  +**Rationale for the default.** Sonnet runs the v0.2 spec set without
+  +quality issues in dogfood. Opus is one flag away when a spec is genuinely
+  +complex (heavy refactor, novel API design). The cost differential is real:
+  +sonnet ≈ $3/$15 per MTok input/output, opus ≈ $15/$75 — a 2h sleep that
+  +would have cost $4–15 on opus runs $0.80–3 on sonnet.
+  +
+  +**Test plan.**
+  +- Unit: `sleeping.test.ts` cases `'uses defaultModel when start request omits model'`
+  +  and `'honors per-invocation model override'` cover both branches by
+  +  spying on the spawn args.
+  +- Integration: existing `daemon.test.ts` and `notifyFilter.test.ts`
+  +  construct `SleepingOrchestrator` with `defaultModel: 'sonnet'`, exercising
+  +  the wiring end-to-end.
+  +
+   ## Slug + branch + worktree naming
+   
+   - Slug = lowercased first 4-6 words of the prompt OR the basename of the plan file,
+  +36 -1
+
+src/cli/index.ts
+  @@ -212,7 +212,8 @@ sleeping
+  -  .action(async (opts: { prompt?: string; plan?: string; repo?: string; max?: string }) => {
+  +  .option('--model <name>', `claude model: 'sonnet' (default, cheaper) or 'opus' (override)`)
+  +  .action(async (opts: { prompt?: string; plan?: string; repo?: string; max?: string; model?: string }) => {
+       try {
+         await sleepingStartCommand(opts);
+       } catch (e) {
+  +2 -1
+
+src/cli/init.ts
+  @@ -163,6 +163,7 @@ export async function initCommand(): Promise<void> {
+  +      sleepModel: 'sonnet',
+         failOpen: true,
+       },
+       notifications: { desktop: desktopEnabled },
+  +1 -0
+
+src/cli/sleeping.ts
+  @@ -11,6 +11,7 @@ interface StartOpts {
+  +  model?: string;
+   }
+   
+   interface CancelOpts {
+  @@ -37,7 +38,7 @@ interface CapacityErrorBody {
+  -async function postStart(body: { repo: string; prompt?: string; plan?: string; maxDurationMs?: number }) {
+  +async function postStart(body: { repo: string; prompt?: string; plan?: string; maxDurationMs?: number; model?: 'sonnet' | 'opus' }) {
+     const res = await kuroFetch<{ slug: string; branch: string; worktreePath: string } | CapacityErrorBody | { error?: string }>(
+       '/v1/sleeping',
+       { method: 'POST', body },
+  @@ -105,7 +106,15 @@ export async function sleepingStartCommand(opts: StartOpts): Promise<void> {
+  -  const session = await postStart({ repo, prompt: opts.prompt, plan, maxDurationMs });
+  +  let model: 'sonnet' | 'opus' | undefined;
+  +  if (opts.model !== undefined) {
+  +    if (opts.model !== 'sonnet' && opts.model !== 'opus') {
+  +      console.error(chalk.red(`--model must be 'sonnet' or 'opus' (got '${opts.model}')`));
+  +      process.exit(1);
+  +    }
+  +    model = opts.model;
+  +  }
+  +  const session = await postStart({ repo, prompt: opts.prompt, plan, maxDurationMs, model });
+     console.log(chalk.green(`💤 sleep started`));
+     console.log(`  slug:     ${session.slug}`);
+     console.log(`  branch:   ${session.branch}`);
+  +11 -2
+
+src/cli/start.ts
+  @@ -6,8 +6,8 @@ import path from 'node:path';
+  -import { CONFIG_DIR, STARTUP_LOG_FILE } from '../config/paths.js';
+  -import { checkHealth, sleep } from './util.js';
+  +import { CONFIG_DIR, STARTUP_LOG_FILE, WATCHDOG_PID_FILE } from '../config/paths.js';
+  +import { checkHealth, isProcessAlive, sleep } from './util.js';
+   
+   export interface StartOptions {
+     detach?: boolean;
+  @@ -45,6 +45,25 @@ async function startDetached(opts: StartOptions): Promise<void> {
+  +  // Guard against double-start: if a watchdog is already running (and
+  +  // checkHealth came back transiently false because the daemon is mid-respawn),
+  +  // a second `kuroboto start --detach` would spawn a duplicate watchdog,
+  +  // overwrite WATCHDOG_PID_FILE, and race with the first on every respawn.
+  +  // (PR #29 review #1.) Stale PID file → unlink + proceed.
+  +  if (!opts.noWatchdog) {
+  +    const existingWatchdogPid = await readWatchdogPid();
+  +    if (existingWatchdogPid !== null) {
+  +      if (isProcessAlive(existingWatchdogPid)) {
+  +        console.log(
+  +          chalk.yellow(`watchdog já está rodando (PID=${existingWatchdogPid}) — sai com kuroboto stop`),
+  +        );
+  +        return;
+  +      }
+  +      // Stale: unlink and proceed.
+  +      await fsp.unlink(WATCHDOG_PID_FILE).catch(() => undefined);
+  +    }
+  +  }
+  +
+     // Truncate before each start so a stale crash log from an earlier run
+     // doesn't get surfaced as the cause of a new failure.
+     await fsp.mkdir(CONFIG_DIR, { recursive: true });
+  @@ -90,6 +109,16 @@ async function formatStartupCrash(
+  +async function readWatchdogPid(): Promise<number | null> {
+  +  try {
+  +    const raw = await fsp.readFile(WATCHDOG_PID_FILE, 'utf-8');
+  +    const pid = Number.parseInt(raw.trim(), 10);
+  +    return Number.isFinite(pid) ? pid : null;
+  +  } catch {
+  +    return null;
+  +  }
+  +}
+  +
+   async function readStartupLogTail(maxLines = 30): Promise<string> {
+     try {
+       const content = await fsp.readFile(STARTUP_LOG_FILE, 'utf-8');
+  +31 -2
+
+src/cli/stop.ts
+  @@ -6,7 +6,14 @@ import { readPid, isProcessAlive, sleep } from './util.js';
+  -    process.kill(watchdogPid, 'SIGTERM');
+  +    // isProcessAlive + process.kill are not atomic — the watchdog can die
+  +    // between the two. Tolerate ESRCH; the polling loop below will report
+  +    // the actual final state (PR #29 review #4).
+  +    try {
+  +      process.kill(watchdogPid, 'SIGTERM');
+  +    } catch (e) {
+  +      if ((e as NodeJS.ErrnoException).code !== 'ESRCH') throw e;
+  +    }
+       const deadline = Date.now() + 10_000;
+       while (Date.now() < deadline) {
+         if (!isProcessAlive(watchdogPid)) {
+  @@ -26,7 +33,11 @@ export async function stopCommand(): Promise<void> {
+  -  process.kill(pid, 'SIGTERM');
+  +  try {
+  +    process.kill(pid, 'SIGTERM');
+  +  } catch (e) {
+  +    if ((e as NodeJS.ErrnoException).code !== 'ESRCH') throw e;
+  +  }
+     const deadline = Date.now() + 10_000;
+     while (Date.now() < deadline) {
+       if (!isProcessAlive(pid)) {
+  +13 -2
+
+src/config/schema.ts
+  @@ -37,6 +37,11 @@ export const PolicyConfig = z.object({
+  +  // Model used by autonomous sleep claude spawns. Sonnet is the default
+  +  // because spec-driven sleep work is mostly mechanical execution; opus
+  +  // costs ~5x for a marginal quality bump on this workload. Override via
+  +  // `kuroboto sleeping start --model opus` for genuinely complex specs.
+  +  sleepModel: z.enum(['sonnet', 'opus']).default('sonnet'),
+     failOpen: z.boolean(),
+   });
+   
+  +5 -0
+
+src/daemon/lifecycle.ts
+  @@ -77,6 +77,7 @@ export async function startDaemon(initialConfig: ConfigT): Promise<RunningDaemon
+  +    defaultModel: config.policy.sleepModel,
+       onSuccess: (session) =>
+         finishSleep(session, {
+           exec: async (cmd, args, opts) => {
+  +1 -0
+
+src/daemon/routes.ts
+  @@ -88,6 +88,7 @@ export function registerRoutes(app: Express, ctx: DaemonContext): void {
+  +      model?: string;
+       };
+       if (typeof body.repo !== 'string' || !body.repo) {
+         res.status(400).json({ error: 'repo required' });
+  @@ -101,6 +102,10 @@ export function registerRoutes(app: Express, ctx: DaemonContext): void {
+  +    if (body.model !== undefined && body.model !== 'sonnet' && body.model !== 'opus') {
+  +      res.status(400).json({ error: "model must be 'sonnet' or 'opus'" });
+  +      return;
+  +    }
+       const maxDurationMs = body.maxDurationMs ?? ctx.config.policy.sleepMaxDurationMs;
+       const workRoot = expandHome(ctx.config.policy.sleepWorktreeDir);
+       try {
+  @@ -111,6 +116,7 @@ export function registerRoutes(app: Express, ctx: DaemonContext): void {
+  +        model: body.model as 'sonnet' | 'opus' | undefined,
+         });
+         res.status(202).json({
+           ok: true,
+  +6 -0
+
+src/daemon/sleeping.ts
+  @@ -21,6 +21,9 @@ export interface SleepingDeps {
+  +  /** Default claude model when the start request doesn't specify one.
+  +   *  'sonnet' is the right answer for spec-driven work — see schema docstring. */
+  +  defaultModel: 'sonnet' | 'opus';
+   }
+   
+   export interface SleepingStartRequest {
+  @@ -29,6 +32,8 @@ export interface SleepingStartRequest {
+  +  /** Override per-invocation. When unset, falls back to deps.defaultModel. */
+  +  model?: 'sonnet' | 'opus';
+   }
+   
+   export interface SleepingSession {
+  @@ -162,9 +167,14 @@ export class SleepingOrchestrator {
+  +    // --model pins the model so sleep doesn't accidentally inherit whatever
+  +    // the user has set as their interactive default (typically opus). Sonnet
+  +    // is the right answer for spec-driven mechanical execution; opus override
+  +    // is available per-invocation via the start request.
+  +    const model = req.model ?? this.deps.defaultModel;
+       const child = this.deps.spawn(
+         'claude',
+  -      ['--dangerously-skip-permissions', '-p', finalPrompt],
+  +      ['--dangerously-skip-permissions', '--model', model, '-p', finalPrompt],
+         { cwd: worktreePath },
+       );
+   
+  +11 -1
+
+src/daemon/worktree.ts
+  @@ -1,5 +1,4 @@
+  -import path from 'node:path';
+   import { spawn } from 'node:child_process';
+   import { randomBytes } from 'node:crypto';
+   
+  @@ -49,14 +48,20 @@ export function slugify(input: string, withSuffix: boolean = true): string {
+  +  let real: string;
+     try {
+  -    await fsp.stat(dir);
+  +    // realpath resolves junctions/symlinks (Windows tmp paths under
+  +    // C:\Users\<runner>\AppData\Local\Temp are usually NTFS junctions to
+  +    // somewhere else; git outputs the resolved path, but path.resolve
+  +    // alone does not). Returns ENOENT when the dir is gone.
+  +    real = await fsp.realpath(dir);
+     } catch {
+       return false;
+     }
+     const r = await runGit(repoRoot, ['worktree', 'list', '--porcelain']);
+  -  // Normalize paths for comparison (git may use forward slashes on Windows)
+  -  const normalizedDir = path.resolve(dir).replace(/\\/g, '/');
+  +  // Normalize for comparison: git on Windows emits forward slashes in
+  +  // --porcelain output even though Node returns backslashes from realpath.
+  +  const normalizedDir = real.replace(/\\/g, '/');
+     return r.stdout.includes(normalizedDir);
+   }
+   
+  +9 -4
+
+src/watchdog/index.ts
+  @@ -144,6 +144,23 @@ export async function runWatchdog(deps: RunWatchdogDeps = {}): Promise<number> {
+  +  // Tracks whether the next successful spawn constitutes a respawn (i.e. the
+  +  // loop has iterated at least once already). The hook fires with the NEW
+  +  // pid — not the dying child's — and only when a respawn actually happens.
+  +  let isRespawn = false;
+  +
+  +  // Open the startup log for stdio redirect; on failure log + fall back to a
+  +  // null sink so spawn doesn't throw. Runs inside runWatchdog so it can use
+  +  // the closured logger (PR #29 review #6: silent fallback was masking real
+  +  // permission/FS errors).
+  +  const openLogFd = (file: string): number => {
+  +    try {
+  +      return fs.openSync(file, 'a');
+  +    } catch (e) {
+  +      log(`openLogFd fallback for ${file}: ${(e as Error).message}`);
+  +      return fs.openSync(process.platform === 'win32' ? 'nul' : '/dev/null', 'a');
+  +    }
+  +  };
+   
+     const cleanupPidFiles = async (): Promise<void> => {
+       await unlinkBest(pidFile);
+  @@ -190,6 +207,19 @@ export async function runWatchdog(deps: RunWatchdogDeps = {}): Promise<number> {
+  +  // SIGTERM in two paths:
+  +  // - During `await sleep(wait)` between respawns: handleStopSignal is the
+  +  //   ONLY path that runs cleanupPidFiles + emits the "stopped cleanly" log,
+  +  //   because process.exit(0) fires from handleStopSignal itself.
+  +  // - During `await exitPromise` (daemon running normally — common case):
+  +  //   the kill below makes exitPromise resolve immediately, the main loop
+  +  //   unblocks, hits `if (stopping) break`, runs cleanupPidFiles + the
+  +  //   "stopped cleanly" log, then returns 0 — and process.exit(0) fires
+  +  //   from the top-level then-handler, racing handleStopSignal's polling
+  +  //   waitForExit. handleStopSignal's tail (cleanupPidFiles + log) is
+  +  //   unreachable in that path.
+  +  // Both terminal paths run cleanupPidFiles (idempotent via unlinkBest) and
+  +  // emit the same log line, so debugging from watchdog.log is consistent.
+     const handleStopSignal = async (sig: NodeJS.Signals): Promise<void> => {
+       if (stopping) return;
+       stopping = true;
+  @@ -231,15 +261,25 @@ export async function runWatchdog(deps: RunWatchdogDeps = {}): Promise<number> {
+  +    // Capture FDs into named vars so we can close our own handles after spawn.
+  +    // Otherwise each respawn cycle leaks 2 FDs into the watchdog process
+  +    // (PR #29 review #5).
+  +    let outFd: number | null = null;
+  +    let errFd: number | null = null;
+       try {
+  +      outFd = openLogFd(startupLog);
+  +      errFd = openLogFd(startupLog);
+         child = spawnFn(process.execPath, [daemonEntry], {
+           // stdio shares the startup log so the parent CLI can tail any
+           // startup error (PR #23 path stays intact). We don't `detached: true`
+           // here — the daemon must be a child of the watchdog so `exit` fires.
+  -        stdio: ['ignore', openSafe(startupLog), openSafe(startupLog)],
+  +        stdio: ['ignore', outFd, errFd],
+           windowsHide: true,
+         });
+       } catch (e) {
+  +      // Close any FDs we opened before the spawn failed.
+  +      if (outFd !== null) try { fs.closeSync(outFd); } catch { /* best-effort */ }
+  +      if (errFd !== null) try { fs.closeSync(errFd); } catch { /* best-effort */ }
+         const detail = `spawn threw: ${(e as Error).message}`;
+         log(detail);
+         await appendAuditSafe({
+  @@ -252,6 +292,18 @@ export async function runWatchdog(deps: RunWatchdogDeps = {}): Promise<number> {
+  +    // Close the watchdog's handles to the FDs — the child has its own copies.
+  +    // Without this, every respawn cycle leaks 2 FDs into the watchdog process.
+  +    try { fs.closeSync(outFd); } catch { /* best-effort */ }
+  +    try { fs.closeSync(errFd); } catch { /* best-effort */ }
+  +
+  +    // Fire onDaemonRespawn AFTER the new process is spawned, with the NEW
+  +    // pid — not the dying child's. Skipped on the first iteration since that
+  +    // is a fresh start, not a respawn (PR #29 review #2/#3). Putting it here
+  +    // also covers the timeout-respawn path that was missing the hook.
+  +    if (isRespawn) {
+  +      deps.onDaemonRespawn?.(child.pid);
+  +    }
+   
+       const exitPromise = waitForChildExit(child);
+       const healthy = await waitForHealthy({
+  @@ -266,6 +318,10 @@ export async function runWatchdog(deps: RunWatchdogDeps = {}): Promise<number> {
+  +      // SIGTERM during startup is the user calling `kuroboto stop` — not a
+  +      // failure. Bail cleanly instead of treating it as a crash and emitting
+  +      // a 'startup-failure' notification.
+  +      if (stopping) break;
+         log(`daemon exited before healthy: code=${info.code} signal=${info.signal}`);
+         const decision = shouldRespawn({
+           everHealthy: state.everHealthy,
+  @@ -289,13 +345,16 @@ export async function runWatchdog(deps: RunWatchdogDeps = {}): Promise<number> {
+  -      deps.onDaemonRespawn?.(child.pid);
+  +      isRespawn = true;
+         log(`backoff ${wait}ms before respawn`);
+         await sleep(wait);
+         continue;
+       }
+   
+       if (healthy === 'timeout') {
+  +      // SIGTERM during the health-poll window — same logic as the
+  +      // exited-before-healthy guard above.
+  +      if (stopping) break;
+         log('daemon /health did not return 200 within 10s');
+         // Kill the unhealthy child so it doesn't linger.
+         if (child.exitCode === null) {
+  @@ -337,6 +396,7 @@ export async function runWatchdog(deps: RunWatchdogDeps = {}): Promise<number> {
+  +      isRespawn = true;
+         await sleep(wait);
+         continue;
+       }
+  @@ -382,12 +442,17 @@ export async function runWatchdog(deps: RunWatchdogDeps = {}): Promise<number> {
+  -    deps.onDaemonRespawn?.(child.pid);
+  +    isRespawn = true;
+       log(`backoff ${wait}ms before respawn`);
+       await sleep(wait);
+     }
+   
+  +  // Reached only via `if (stopping) break` after the main loop's exitPromise
+  +  // resolved — the common SIGTERM-while-running path. Emit the same
+  +  // "stopped cleanly" log handleStopSignal would emit so debugging from
+  +  // watchdog.log is consistent across both terminal paths.
+     await cleanupPidFiles();
+  +  log('watchdog stopped cleanly');
+     return 0;
+   }
+   
+  @@ -486,16 +551,6 @@ function makeLogger(deps: RunWatchdogDeps, logFile: string): (msg: string) => vo
+  -function openSafe(file: string): number {
+  -  try {
+  -    return fs.openSync(file, 'a');
+  -  } catch {
+  -    // If the startup log can't be opened (e.g. tests with no fs), fall back
+  -    // to /dev/null-equivalent so spawn doesn't throw.
+  -    return fs.openSync(process.platform === 'win32' ? 'nul' : '/dev/null', 'a');
+  -  }
+  -}
+  -
+   async function unlinkBest(file: string): Promise<void> {
+     try {
+       await fsp.unlink(file);
+  +68 -13
+
+test/integration/daemon.test.ts
+  @@ -69,6 +69,7 @@ function makeContext(overrides: Overrides = {}): {
+  +    defaultModel: 'sonnet',
+     });
+     const injectClients = new InjectClients();
+     const ctx: DaemonContext = {
+  +1 -0
+
+test/integration/watchdogBugC.test.ts
+  @@ -9,6 +9,7 @@
+  +import fs from 'node:fs';
+   import fsp from 'node:fs/promises';
+
+... (more changes truncated)
+  +1 -0
+[full diff: rtk git diff --no-compact]

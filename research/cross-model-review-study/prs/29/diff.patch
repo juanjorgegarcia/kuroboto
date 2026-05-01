@@ -1,0 +1,514 @@
+
+docs/specs-backlog.md
+  @@ -4,8 +4,20 @@ Loose collection of feature ideas worth a spec eventually. Not prioritized; prom
+  -- **Spec D — parallel sleep sessions** (`docs/specs/parallel-sleeps.md`). Was deferred behind Spec E (PTY injection); E shipped in PR #12, so D is now unblocked. Will need a quick rebase since Spec E touched `sleeping.ts` for late-binding integration.
+  -- **Spec F — Telegram supergroup + topics** (`docs/specs/supergroup-topics.md`). Designed in the same session as Spec E. Independent of D in terms of code — they touch different layers (D = `sleeping.ts` + cli; F = `TelegramChannel` + topic manager + every channel call site). Both can dispatch sequentially or even in parallel with care.
+  +- **Spec G — Bug C watchdog** (`docs/specs/bug-c-watchdog.md`, 2026-04-29). Daemon auto-recovery via parent-child watchdog process. Foundational for status UI integration; touches `start.ts`/`stop.ts`/`status.ts`. v1 magro: respawns daemon on death, sleeps in-flight orphaned with cleanup notif.
+  +- **Spec H — Daemon health UI** (`docs/specs/daemon-health-ui.md`, 2026-04-29). `kuroboto status` enriched with gaming/sleeps/inject/topics/watchdog. New `/v1/status` endpoint, `--json`/`--watch`/`--quiet` flags. Has overlap with Spec G in `cli/status.ts` — dispatch Spec G first, then rebase Spec H atop merged G to avoid conflicts.
+  +
+  +## ForumMode v2 rollout (consolidated follow-ups)
+  +
+  +Three small follow-ups from Spec F (`docs/specs/supergroup-topics.md`, merged in PR #14) that are good candidates for one consolidated spec when forumMode is actually enabled in production and the real ergonomic gaps surface:
+  +
+  +- **Per-host slug prefix** (multi-machine: prepend `mac-juan/` or `win-juan/` to slug) — natural extension once multi-machine setup proves the need. Today the user develops between mac and Windows (per memory `project_multi_machine.md`); enabling forumMode without per-host prefix means same slug across hosts collides into the same topic. Becomes pressing the day forumMode is flipped on.
+  +- **`kuroboto topics list/prune` CLI helpers** — manual inspection/cleanup of `topics.json` when it drifts from actual Telegram state (topic deleted in client, topics.json out of sync). Today the recovery path is hand-edit JSON; not ideal but rare.
+  +- **Auto-archive on Stop hook** — when a Claude session ends (Stop hook fires), close the corresponding topic so the user's topic list doesn't grow unbounded across days/weeks of work. Cosmetic but the "close" action in Telegram already exists; just needs wiring.
+  +
+  +These three touch the same `TopicManager` + `topics.json` + slug derivation surface and would naturally fit one PR. Consolidate into `docs/specs/forum-mode-v2.md` when (a) the user has been on forumMode for a few days and (b) at least one of the three has surfaced a concrete annoyance worth fixing.
+  +
+  +Out of scope of this consolidated spec (kept separate for complexity reasons): **Migration tool DM→supergroup** — automated migration including reposting recent history. Heavier; manual migration is fine for now since it's a one-time operation.
+   
+   ## Extensible sleep finish-hooks (Level 2 of desktop notifications)
+   
+  +14 -2
+
+docs/specs/bug-c-watchdog.md
+  @@ -0,0 +1,217 @@
+  +# Bug C watchdog — daemon auto-recovery
+  +
+  +> Status: planned. Spec G. Targets the long-standing "Bug C" — daemon dies silently and stays dead until the user notices and runs `kuroboto ohayo`. PR #26 covered JS exceptions via `installCrashHandlers`; this spec covers everything that bypasses Node-level handlers (external SIGKILL, OOM killer, OS sleep/hibernate, segfault, power loss).
+  +
+  +## Problem
+  +
+  +The daemon is a single long-lived Node process. Today it dies for several reasons:
+  +
+  +1. **JS exception** — covered by `installCrashHandlers` in PR #26: writes `daemon.crash.log` before exit. Solved.
+  +2. **External SIGKILL** — Windows logoff, `taskkill /F`, OOM killer, force-quit, `kill -9`. Bypasses every Node handler. No log, no signal, daemon just vanishes.
+  +3. **OS sleep / hibernate** — laptop closes lid; on wake, Telegram polling connection is dead and never recovers in some cases. Process is alive but functionally dead.
+  +4. **Native crash** — segfault inside libuv or a native dependency. No JS-level recovery.
+  +5. **Power loss** — same as SIGKILL from the daemon's perspective.
+  +
+  +Observed at least 3× in the 2026-04-29 session: daemon disappeared between 10–30 min after start with **no entry** in `daemon.log` (no shutdown line) and **no entry** in `daemon.crash.log` (PR #26's coverage). The only evidence was the *absence* of activity. User had to manually re-run `kuroboto ohayo` each time, losing whatever in-flight Telegram polling state existed.
+  +
+  +The fix is a separate **watchdog process** that supervises the daemon, detects death instantly via parent-child `child.on('exit')`, and respawns with bounded retries.
+  +
+  +## Solution
+  +
+  +`kuroboto start --detach` spawns a watchdog process (detached). The watchdog spawns the daemon as **its own child**, listens for `exit`, and respawns with exponential backoff. The watchdog stays simple (~200 LOC, no Telegram polling, no HTTP server, no business logic) so its own failure surface is minimal.
+  +
+  +Auto-recovery is **default-on**. There is no "opt-in flag" — Bug C is the entire reason the watchdog exists; making it opt-in would underdeliver on the feature. An opt-out flag `--no-watchdog` is provided for debugging (foreground / direct daemon spawn, current behavior).
+  +
+  +In-flight sleeps that die alongside the daemon are **out of scope for v1**. This spec focuses on daemon-level recovery only. Sleep recovery (persistence, re-attach) is deferred to a follow-up spec — see "Future / v2 roadmap" below — and informed by empirical data this v1 will produce.
+  +
+  +## Architecture
+  +
+  +```
+  +kuroboto start --detach
+  +        │ spawn detached
+  +        ▼
+  +┌──────────────────┐  child.spawn(daemon)   ┌─────────────────────┐
+  +│ watchdog process │ ──────────────────────▶│ daemon process      │
+  +│ (~200 LOC)       │  child.on('exit')      │ (existing lifecycle)│
+  +│  - parent-child  │ ◀──────────────────────┤                     │
+  +│  - backoff       │  poll /v1/health       │ HTTP :47891         │
+  +│  - notify        │ ◀──────────────────────┤                     │
+  +└──────┬───────────┘                        └─────────────────────┘
+  +       │ writes
+  +       ▼
+  +~/.config/kuroboto/watchdog.pid
+  +~/.config/kuroboto/watchdog.log
+  +```
+  +
+  +State machine (watchdog):
+  +
+  +```
+  +   [STARTING_DAEMON] ──spawn ok──▶ [WAITING_HEALTHY] ──/health 200──▶ [RUNNING]
+  +          │                              │                                 │
+  +          │ spawn fail                   │ timeout 10s                     │ child exit
+  +          ▼                              ▼                                 ▼
+  +   [GIVING_UP]                    [GIVING_UP]                    everHealthy?
+  +                                                                          │
+  +                                                       ┌──────────────────┴────────────────┐
+  +                                                       ▼                                   ▼
+  +                                                  no → [GIVING_UP]                 yes → backoff,
+  +                                                                                          re-spawn,
+  +                                                                                          back to
+  +                                                                                  [STARTING_DAEMON]
+  +```
+  +
+  +`everHealthy` is a single boolean per watchdog lifetime: once the daemon's `/v1/health` returns 200 even one time, every subsequent crash is treated as runtime (respawn-eligible). A daemon that never reached healthy is a startup failure (config wrong, port in use) and should not loop.
+  +
+  +## Files
+  +
+  +**Create:**
+  +- `src/watchdog/index.ts` — entry point. Reads config (port, channel for notifications), spawns daemon as child, manages state machine, handles SIGTERM cleanup.
+  +- `src/watchdog/policy.ts` — pure functions, easy to unit test:
+  +  - `nextBackoff(attempt: number): number` — returns ms (1000, 2000, 4000, 8000, 16000, 30000, 30000…).
+  +  - `shouldRespawn(state: WatchdogState): { respawn: boolean; reason: string }` — encapsulates the everHealthy / max-retries / window logic.
+  +- `src/watchdog/notify.ts` — minimal Telegram sender (subset of `TelegramApi.sendMessage`, plus topic context for `kuroboto-system`). Cannot reuse `TelegramChannel` because the daemon may be dead and the watchdog must remain independent. Best-effort: failures log to watchdog.log and continue.
+  +- `test/unit/watchdog/policy.test.ts`
+  +- `test/unit/watchdog/lifecycle.test.ts`
+  +- `test/integration/watchdog-bugC.test.ts`
+  +- `test/integration/watchdog-startup.test.ts`
+  +- `test/integration/watchdog-stop.test.ts`
+  +
+  +**Modify:**
+  +- `src/cli/start.ts` — `startDetached` now spawns the watchdog (not the daemon directly). The `--no-watchdog` flag preserves the legacy direct-spawn path for debug/foreground. Foreground `startForeground` is unchanged.
+  +- `src/cli/stop.ts` — read `WATCHDOG_PID_FILE` first; if present, SIGTERM the watchdog and let it clean up the daemon. If absent (legacy or `--no-watchdog`), fall back to current direct-daemon-kill path.
+  +- `src/cli/status.ts` — show both processes. Detect and clearly flag the split-brain case where watchdog is dead but daemon is alive (rare; happens if the watchdog was killed by hand).
+  +- `src/config/paths.ts` — add `WATCHDOG_PID_FILE = path.join(CONFIG_DIR, 'watchdog.pid')` and `WATCHDOG_LOG_FILE = path.join(CONFIG_DIR, 'watchdog.log')`.
+  +- `src/daemon/lifecycle.ts` — at startup, scan `~/.kuroboto/worktrees/sleep-*` for orphaned worktrees (see "Sleep behavior on crash" below). Notify if found.
+  +
+  +## Behavior details
+  +
+  +### Startup flow
+  +
+  +1. `kuroboto start --detach` runs `checkHealth()`. If daemon already alive → "já está rodando", return.
+  +2. Otherwise spawn the **watchdog** detached, sharing `STARTUP_LOG_FILE` for stdout/stderr (same path used by PR #23 to surface startup errors).
+  +3. Watchdog writes `WATCHDOG_PID_FILE`.
+  +4. Watchdog spawns the daemon as its child, again sharing `STARTUP_LOG_FILE` stdio so any startup error is captured for the parent CLI to tail.
+  +5. Watchdog enters `WAITING_HEALTHY`: polls `http://127.0.0.1:<port>/v1/health` every 250ms for up to 10s.
+  +6. On 200 within 10s → `everHealthy = true`, state → `RUNNING`. Telegram notif `✅ kuroboto online` is sent by the daemon itself (existing behavior). No additional notif from the watchdog on first start.
+  +7. On 10s timeout without 200 → `GIVING_UP`. Watchdog sends notif (best-effort) `❌ daemon não respondeu em 10s — investigar config`, exits non-zero. The CLI parent times out its own wait, reads `STARTUP_LOG_FILE` tail, and prints the error — same UX as PR #23 today.
+  +
+  +### Runtime crash flow (Bug C)
+  +
+  +1. Daemon dies (any cause: SIGKILL, OOM, segfault, escaped JS exception).
+  ... (117 lines truncated)
+  +217 -0
+
+docs/specs/daemon-health-ui.md
+  @@ -0,0 +1,276 @@
+  +# Daemon health UI — `kuroboto status` enriched
+  +
+  +> Status: planned. Spec H. Promotes `kuroboto status` from a 4-line liveness check into the canonical "what is my daemon doing right now" surface. Triggered by a confirmed bug observed 2026-04-29: `kuroboto gaming on` succeeds but the next `kuroboto status` does not surface gaming state, hiding the result. Backend already exposes the data; the CLI throws it away.
+  +
+  +## Problem
+  +
+  +Current `kuroboto status` (`src/cli/status.ts`) shows: PID liveness, HTTP health (`uptime`, `pending`), `mode` read directly from disk, and which Claude Code hooks are installed. That's it.
+  +
+  +The daemon already tracks much more state — gaming, active sleeps with timers, registered PTY clients, topic mappings — and exposes most of it via dedicated endpoints (`/v1/gaming`, `/v1/sleeping`, `/v1/inject-clients`). None of that is visible in the canonical "give me a snapshot" command.
+  +
+  +Confirmed in production 2026-04-29:
+  +
+  +```
+  +$ kuroboto status
+  +  daemon: alive (PID=20652)
+  +  health: ok uptime=2850s pending=0
+  +  mode: here
+  +  hooks: Notification, PreToolUse, Stop
+  +
+  +$ kuroboto gaming on
+  +gaming on (no timer — off only via `kuroboto gaming off`)
+  +
+  +$ kuroboto status
+  +  (identical output — no indication gaming is armed)
+  +```
+  +
+  +The information is in the daemon (`/v1/gaming` returns `{ active: true, until: null }`); the CLI just doesn't ask. There is also a latent consistency bug: `mode` is read from `~/.config/kuroboto/state.json` directly via `loadMode()`, ignoring whatever the daemon has in memory. If the two diverge (e.g., during a write), the CLI lies.
+  +
+  +The fix is a richer, single-shot `kuroboto status` that queries the daemon for everything, falls back gracefully when the daemon is offline, and supports `--json` for scripting and `--watch` for live monitoring.
+  +
+  +## Solution
+  +
+  +Three pieces:
+  +
+  +1. **New endpoint `GET /v1/status`** returns the full daemon state in one response. `/v1/health` shrinks to `{ ok, uptimeSec }` — pure liveness, suitable for the watchdog (Spec G) polling loop.
+  +2. **`kuroboto status` rewritten** as a single command that aggregates daemon state + local-only info (watchdog PID file, hooks settings, config path) and renders via pure formatter functions.
+  +3. **Flags:** `--json` (machine-readable), `--watch [N]` (live refresh), `--quiet` (one-liner liveness for scripts).
+  +
+  +The single-command approach won out over per-domain subcommands (`kuroboto sleeps`, `kuroboto gaming`) because the primary use case is "glance and check everything" — splitting forces the user to remember 5 commands. Existing subcommands (`kuroboto gaming on/off`, `kuroboto sleeping start`) stay as **mutators**; `status` is the read surface.
+  +
+  +The endpoint split (rather than fattening `/v1/health`) decouples liveness probes from display payload. The watchdog (Spec G) polls `/v1/health` continuously; keeping that endpoint trivial means future status growth doesn't penalize the watchdog hot path.
+  +
+  +## Architecture
+  +
+  +```
+  +        ┌──────────────────────────────────────┐
+  +        │ kuroboto status [--json|--watch|...] │
+  +        └────────────────┬─────────────────────┘
+  +                         │
+  +           ┌─────────────┼──────────────┬───────────────────┐
+  +           │             │              │                   │
+  +           ▼             ▼              ▼                   ▼
+  +    GET /v1/status  WATCHDOG_PID_FILE  ~/.claude/        CONFIG_FILE
+  +    (auth required) (local read)      settings.json     (path string)
+  +           │             │              │                   │
+  +           └─────────────┴──────┬───────┴───────────────────┘
+  +                                ▼
+  +                  ┌─────────────────────────┐
+  +                  │ statusFormat.ts (pure)  │
+  +                  │  - formatHumanReadable  │
+  +                  │  - formatJson           │
+  +                  │  - formatQuiet          │
+  +                  └─────────────────────────┘
+  +                                │
+  +                                ▼
+  +                            stdout
+  +```
+  +
+  +`/v1/health` (shrunk) and `/v1/status` (new) both bind to loopback only and inherit the existing auth model: `/health` stays auth-bypass (liveness probe should be free), `/status` requires the standard `X-Kuroboto-Token` header.
+  +
+  +## Files
+  +
+  +**Create:**
+  +- `src/cli/statusFormat.ts` — pure formatter functions and humanization helpers. No I/O, no side effects.
+  +- `test/unit/statusFormat.test.ts` — covers helpers (`humanizeDuration`, `formatCountdown`, `truncatePath`) and each formatter against fixtures.
+  +- `test/integration/statusCommand.test.ts` — end-to-end tests covering all anti-regression cases.
+  +
+  +**Modify:**
+  +- `src/daemon/routes.ts`:
+  +  - Shrink `GET /v1/health` to `{ ok: true, uptimeSec }`. **This is a breaking change** for any existing client of `/v1/health` that consumed `pending`/`mode`/`gaming` from it. Today the only consumer is `src/cli/util.ts:checkHealth()`, used by `cli/status.ts` and `cli/start.ts`; both are updated in this spec.
+  +  - Add `GET /v1/status` returning the full state shape (see Schema below).
+  +- `src/cli/util.ts`:
+  +  - `HealthData` interface narrows to `{ ok: boolean; uptimeSec: number }`.
+  +  - New `StatusData` interface mirroring the new endpoint shape.
+  +  - New `fetchStatus(timeoutMs?): Promise<StatusResult>` — parallel to `checkHealth` but with auth header from loaded config.
+  +- `src/cli/status.ts`:
+  +  - Parse flags via existing CLI parser convention (whatever pattern `start.ts` etc. use).
+  +  - Aggregate: `Promise.allSettled([readPid, readWatchdogPid, fetchStatus, detectInstalledHooks])`.
+  +  - Delegate output to `statusFormat.ts`.
+  +  - `--watch` loop with ANSI clear; SIGINT handler for clean exit.
+  +
+  +## Schema (StatusResponse)
+  +
+  +```ts
+  +interface StatusResponse {
+  +  daemon: {
+  +    pid: number;
+  +    uptimeSec: number;
+  +    startedAt: string;        // ISO timestamp
+  +    hostname: string;
+  ... (176 lines truncated)
+  +276 -0
+
+docs/specs/sleep-mode.md
+  @@ -1,6 +1,6 @@
+  -> Status: implementing in `feat/sleep-mode`
+  +> Status: shipped (v0.2). Parallel sessions added later via Spec D — see `parallel-sleeps.md`. Sections below describing single-session behavior (Max one, GET returns object, 409 on second start) are superseded by that spec; the daemon now holds up to `policy.maxConcurrentSleeps` sessions (default 6) and 409 became 429 on capacity.
+   
+   ## Problem
+   
+  +1 -1
+
+src/cli/index.ts
+  @@ -65,11 +65,17 @@ program
+  -  .description('Start the daemon')
+  +  .description('Start the daemon (under watchdog supervision when --detach)')
+     .option('-d, --detach', 'Run as detached background process', false)
+  -  .action(async (opts: { detach: boolean }) => {
+  +  .option(
+  +    '--no-watchdog',
+  +    'Skip the watchdog supervisor and spawn the daemon directly (debug/legacy)',
+  +    false,
+  +  )
+  +  .action(async (opts: { detach: boolean; watchdog: boolean }) => {
+       try {
+  -      await startCommand(opts);
+  +      // Commander inverts `--no-watchdog` into `opts.watchdog: false`
+  +      await startCommand({ detach: opts.detach, noWatchdog: opts.watchdog === false });
+       } catch (e) {
+         console.error(`start failed: ${(e as Error).message}`);
+         process.exit(1);
+  +9 -3
+
+src/cli/start.ts
+  @@ -11,6 +11,12 @@ import { checkHealth, sleep } from './util.js';
+  +  /**
+  +   * When true, skip the watchdog and spawn the daemon directly (legacy
+  +   * pre-Spec-G behavior). Useful for debugging — see the daemon's own
+  +   * stdout/stderr without the watchdog supervision layer in between.
+  +   */
+  +  noWatchdog?: boolean;
+   }
+   
+   export async function startCommand(opts: StartOptions): Promise<void> {
+  @@ -20,7 +26,7 @@ export async function startCommand(opts: StartOptions): Promise<void> {
+  -    await startDetached();
+  +    await startDetached(opts);
+       return;
+     }
+     await startForeground();
+  @@ -33,9 +39,11 @@ async function startForeground(): Promise<void> {
+  -async function startDetached(): Promise<void> {
+  +async function startDetached(opts: StartOptions): Promise<void> {
+     const here = path.dirname(fileURLToPath(import.meta.url));
+  -  const daemonEntry = path.join(here, '..', 'daemon', 'index.js');
+  +  const entry = opts.noWatchdog
+  +    ? path.join(here, '..', 'daemon', 'index.js')
+  +    : path.join(here, '..', 'watchdog', 'index.js');
+   
+     // Truncate before each start so a stale crash log from an earlier run
+     // doesn't get surfaced as the cause of a new failure.
+  @@ -44,7 +52,7 @@ async function startDetached(): Promise<void> {
+  -  const child = spawn(process.execPath, [daemonEntry], {
+  +  const child = spawn(process.execPath, [entry], {
+       detached: true,
+       stdio: ['ignore', out, err],
+       windowsHide: true,
+  @@ -60,7 +68,8 @@ async function startDetached(): Promise<void> {
+  -      console.log(chalk.green(`daemon iniciado (PID=${child.pid})`));
+  +      const label = opts.noWatchdog ? 'daemon' : 'watchdog';
+  +      console.log(chalk.green(`daemon iniciado (${label} PID=${child.pid})`));
+         return;
+       }
+       if (exitInfo !== null) {
+  +14 -5
+
+src/cli/status.ts
+  @@ -3,18 +3,42 @@ import path from 'node:path';
+  -import { CONFIG_FILE } from '../config/paths.js';
+  +import { CONFIG_FILE, WATCHDOG_PID_FILE } from '../config/paths.js';
+   import { loadMode } from '../daemon/state.js';
+   
+   export async function statusCommand(): Promise<void> {
+     console.log(chalk.bold('kuroboto status'));
+     console.log(`  config: ${CONFIG_FILE}`);
+   
+  +  const watchdogPid = await readWatchdogPidFile();
+  +  const watchdogAlive = watchdogPid !== null && isProcessAlive(watchdogPid);
+  +  const watchdogLabel =
+  +    watchdogPid === null
+  +      ? chalk.dim('(none)')
+  +      : watchdogAlive
+  +        ? chalk.green(`alive (PID=${watchdogPid})`)
+  +        : chalk.red(`dead (stale PID=${watchdogPid})`);
+  +  console.log(`  watchdog: ${watchdogLabel}`);
+  +
+     const pid = await readPid();
+     const alive = pid !== null && isProcessAlive(pid);
+  -  const pidLabel = pid === null ? '(none)' : alive ? chalk.green(`alive (PID=${pid})`) : chalk.red(`dead (stale PID=${pid})`);
+  +  const pidLabel =
+  +    pid === null
+  +      ? chalk.dim('(none)')
+  +      : alive
+  +        ? chalk.green(`alive (PID=${pid})`)
+  +        : chalk.red(`dead (stale PID=${pid})`);
+     console.log(`  daemon: ${pidLabel}`);
+   
+  +  // Split-brain: watchdog dead but daemon alive — happens if the watchdog
+  +  // was killed by hand. The daemon will keep running but no one is
+  +  // supervising it, so the next crash falls back to the original Bug C.
+  +  if (watchdogPid !== null && !watchdogAlive && alive) {
+  +    console.log(
+  +      `  ${chalk.yellow('!! split-brain: watchdog gone but daemon still up — kuroboto stop && kuroboto start --detach to recover')}`,
+  +    );
+  +  }
+  +
+     const health = await checkHealth();
+     if (health.ok) {
+       console.log(`  health: ${chalk.green('ok')} uptime=${health.data.uptimeSec}s pending=${health.data.pending}`);
+  @@ -36,6 +60,16 @@ export async function statusCommand(): Promise<void> {
+  +async function readWatchdogPidFile(): Promise<number | null> {
+  +  try {
+  +    const raw = await fsp.readFile(WATCHDOG_PID_FILE, 'utf-8');
+  +    const pid = Number.parseInt(raw.trim(), 10);
+  +    return Number.isFinite(pid) ? pid : null;
+  +  } catch {
+  +    return null;
+  +  }
+  +}
+  +
+   interface HookEntry {
+     matcher?: string;
+     hooks?: Array<{ type?: string; command?: string }>;
+  +36 -2
+
+src/cli/stop.ts
+  @@ -1,7 +1,26 @@
+  +import fsp from 'node:fs/promises';
+   import chalk from 'chalk';
+  +import { WATCHDOG_PID_FILE } from '../config/paths.js';
+   import { readPid, isProcessAlive, sleep } from './util.js';
+   
+   export async function stopCommand(): Promise<void> {
+  +  const watchdogPid = await readWatchdogPid();
+  +  if (watchdogPid !== null && isProcessAlive(watchdogPid)) {
+  +    process.kill(watchdogPid, 'SIGTERM');
+  +    const deadline = Date.now() + 10_000;
+  +    while (Date.now() < deadline) {
+  +      if (!isProcessAlive(watchdogPid)) {
+  +        console.log(chalk.green('watchdog + daemon parados'));
+  +        return;
+  +      }
+  +      await sleep(200);
+  +    }
+  +    console.error(chalk.red('watchdog não parou em 10s'));
+  +    process.exitCode = 1;
+  +    return;
+  +  }
+  +
+  +  // Legacy / --no-watchdog path: kill the daemon directly.
+     const pid = await readPid();
+     if (!pid || !isProcessAlive(pid)) {
+       console.log(chalk.yellow('nenhum daemon rodando'));
+  @@ -19,3 +38,13 @@ export async function stopCommand(): Promise<void> {
+  +
+  +async function readWatchdogPid(): Promise<number | null> {
+  +  try {
+  +    const raw = await fsp.readFile(WATCHDOG_PID_FILE, 'utf-8');
+  +    const pid = Number.parseInt(raw.trim(), 10);
+  +    return Number.isFinite(pid) ? pid : null;
+  +  } catch {
+  +    return null;
+  +  }
+  +}
+  +29 -0
+
+src/config/paths.ts
+  @@ -10,3 +10,5 @@ export const AUDIT_FILE = path.join(CONFIG_DIR, 'audit.jsonl');
+  +export const WATCHDOG_PID_FILE = path.join(CONFIG_DIR, 'watchdog.pid');
+  +export const WATCHDOG_LOG_FILE = path.join(CONFIG_DIR, 'watchdog.log');
+  +2 -0
+
+src/daemon/lifecycle.ts
+  @@ -1,5 +1,6 @@
+  +import path from 'node:path';
+   import { type Server } from 'node:http';
+   import { spawn as nodeSpawn, type SpawnOptions } from 'node:child_process';
+   import type { Channel } from '../channels/Channel.js';
+  @@ -26,6 +27,7 @@ import { validateTmuxAvailable } from '../inject/validate.js';
+  +import { scanOrphanWorktrees } from './orphanWorktrees.js';
+   
+   export interface RunningDaemon {
+     stop(): Promise<void>;
+  @@ -190,9 +192,86 @@ export async function startDaemon(initialConfig: ConfigT): Promise<RunningDaemon
+  +  // Spec G v1: surface sleep worktrees that look orphaned after a watchdog
+  +  // respawn or hard restart. Best-effort — failures don't block startup.
+  +  void announceOrphanedWorktrees(config, channel, logger);
+  +
+     return { stop };
+   }
+   
+  +async function announceOrphanedWorktrees(
+  +  config: ConfigT,
+  +  channel: Channel,
+  +  logger: Logger,
+  +): Promise<void> {
+  +  try {
+  +    const workRoot = expandHome(config.policy.sleepWorktreeDir);
+  +    const orphans = await scanOrphanWorktrees({
+  +      workRoot,
+  +      log: (msg, fields) => logger.info(msg, fields),
+  +      listOpenSleepBranches: () => listOpenSleepBranchesViaGh(logger),
+  +    });
+  +    if (orphans.length === 0) return;
+  +    for (const o of orphans) {
+  +      await channel
+  +        .sendNotification(
+  +          `⚠️ sleep ${o.slug} ficou órfão durante restart; investigar manualmente`,
+  +          topicContextSystem(),
+  +        )
+  +        .catch(() => {
+  +          // best-effort
+  +        });
+  +    }
+  +  } catch (e) {
+  +    logger.warn('orphan worktree scan failed', { err: (e as Error).message });
+  +  }
+  +}
+  +
+  +function expandHome(dir: string): string {
+  +  if (dir.startsWith('~/') || dir === '~') {
+  +    return path.join(os.homedir(), dir.slice(1).replace(/^[\\/]/, ''));
+  +  }
+  +  return dir;
+  +}
+  +
+  +async function listOpenSleepBranchesViaGh(logger: Logger): Promise<Set<string>> {
+  +  return new Promise((resolve) => {
+  +    const child = nodeSpawn(
+  +      'gh',
+  +      ['pr', 'list', '--state', 'open', '--json', 'headRefName', '--limit', '100'],
+  +      { shell: false, windowsHide: true },
+  +    );
+  +    let stdout = '';
+  +    let stderr = '';
+  +    child.stdout?.on('data', (b) => (stdout += b.toString()));
+  +    child.stderr?.on('data', (b) => (stderr += b.toString()));
+  +    child.on('error', (e) => {
+  +      logger.warn('gh pr list spawn error', { err: e.message });
+  +      resolve(new Set());
+  +    });
+  +    child.on('close', (code) => {
+  +      if (code !== 0) {
+  +        logger.warn('gh pr list non-zero', { code, stderr: stderr.trim().slice(0, 200) });
+  +        resolve(new Set());
+  +        return;
+  +      }
+  +      try {
+  +        const prs = JSON.parse(stdout) as Array<{ headRefName: string }>;
+  +        const slugs = new Set<string>();
+  +        for (const pr of prs) {
+  +          if (pr.headRefName?.startsWith('sleep/')) {
+  +            slugs.add(pr.headRefName.slice('sleep/'.length));
+  +          }
+  +        }
+  +        resolve(slugs);
+  +      } catch (e) {
+  +        logger.warn('gh pr list parse failed', { err: (e as Error).message });
+  +        resolve(new Set());
+  +      }
+  +    });
+  +  });
+  +}
+  +
+   async function ensureNoExistingDaemon(): Promise<void> {
+     let pidStr: string;
+     try {
+  +79 -0
+
+src/daemon/orphanWorktrees.ts
+
+... (more changes truncated)
+[full diff: rtk git diff --no-compact]

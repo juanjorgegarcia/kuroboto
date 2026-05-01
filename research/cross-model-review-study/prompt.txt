@@ -1,0 +1,48 @@
+You are reviewing a pull request for the kuroboto project. Read the project context and spec, then review the diff as a senior engineer.
+
+# Project context (AGENTS.md)
+
+{{context}}
+
+# Spec the PR implements
+
+{{spec}}
+
+# PR diff
+
+```diff
+{{diff}}
+```
+
+# Review focus
+
+1. **Bugs / logic errors** — anything that would break in production (hook failures, daemon crashes, race conditions, lost messages).
+2. **Security** — input validation, command injection (this project spawns lots of subprocesses: claude, gh, git, tmux), secret handling (Telegram tokens, daemon authToken, never log them).
+3. **Spec adherence** — does the diff implement what the spec describes? Are spec test-plan cases actually exercised by tests in this PR? Flag any deviation from the spec without explanation.
+4. **Convention drift** — anything that breaks AGENTS.md patterns: where things live, the daemon/hook/cli boundaries, the channel abstraction, audit/allowlist invariants.
+5. **Silent failures** — try/catch that swallow errors, fallback logic that hides real problems, missing logger calls on error paths.
+
+Skip nitpicks (formatting, naming preferences, line length). Surface only issues that would justify a "request changes" review.
+
+# Output
+
+Respond with STRICT JSON ONLY — no prose before or after, no markdown fences. Schema:
+
+```
+{
+  "findings": [
+    {
+      "file": "src/path/to/file.ts",
+      "line": 123,
+      "severity": "P0" | "P1" | "P2",
+      "category": "bug" | "security" | "spec" | "convention" | "silent-failure" | "performance" | "test-gap",
+      "summary": "single sentence describing the issue"
+    }
+  ],
+  "verdict": "LGTM" | "comments" | "request changes"
+}
+```
+
+P0 = blocking (data loss, security, crash). P1 = should fix before merge (real bug, broken contract). P2 = nice to fix.
+
+If you have no findings, return `{"findings": [], "verdict": "LGTM"}`.

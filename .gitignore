@@ -8,3 +8,4 @@ dist/
 .idea/
 coverage/
 .claude/settings.local.json
+.claude-octopus/
