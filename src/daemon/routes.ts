@@ -516,7 +516,7 @@ export function registerRoutes(app: Express, ctx: DaemonContext): void {
 }
 
 function deriveSource(d: Decision): string {
-  if (d.decision === 'deny' && d.reason === 'timeout') return 'timeout';
+  if (d.reason === 'timeout') return 'timeout';
   if (d.decision === 'ask' && d.reason === 'channel unavailable') return 'channel-error';
   return 'telegram';
 }

@@ -9,11 +9,15 @@ describe('PendingMap', () => {
     expect(await promise).toEqual({ decision: 'allow' });
   });
 
-  it('returns timeout deny when nobody resolves in time', async () => {
+  it('returns timeout ask when nobody resolves in time', async () => {
+    // On timeout we ask Claude Code to fall back to its native permission UI
+    // rather than denying the tool call. Denying surfaces as a "hook blocking
+    // error: timeout" and prevents desk users from approving via the CC UI
+    // when the Telegram side missed the prompt.
     const map = new PendingMap();
     const { promise } = map.create(50);
     const decision = await promise;
-    expect(decision).toEqual({ decision: 'deny', reason: 'timeout' });
+    expect(decision).toEqual({ decision: 'ask', reason: 'timeout' });
   });
 
   it('drainAll denies every pending entry with the given reason', async () => {
