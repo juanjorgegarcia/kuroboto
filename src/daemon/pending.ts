@@ -34,7 +34,13 @@ export class PendingMap {
       const e = this.entries.get(requestId);
       if (e) {
         this.entries.delete(requestId);
-        e.resolve({ decision: 'deny', reason: 'timeout' });
+        // Resolve as 'ask' (not 'deny') so the hook surfaces no decision and
+        // Claude Code falls back to its native permission UI. Denying on
+        // timeout used to surface as "PreToolUse hook blocking error: timeout"
+        // — confusing for desk users who simply hadn't seen the Telegram
+        // prompt yet. Remote workflow is unaffected: replies arriving inside
+        // the window still hit `resolve()` with the real decision.
+        e.resolve({ decision: 'ask', reason: 'timeout' });
       }
     }, timeoutMs);
     this.entries.set(requestId, {

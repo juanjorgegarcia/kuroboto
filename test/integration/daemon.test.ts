@@ -259,7 +259,7 @@ describe('daemon HTTP', () => {
     expect(res.body).toEqual({ decision: 'allow', reason: 'tap' });
   });
 
-  it('POST /v1/permission in away mode resolves with timeout deny when nobody responds', async () => {
+  it('POST /v1/permission in away mode resolves with timeout ask when nobody responds', async () => {
     const { ctx: shortCtx } = makeContext({
       mode: 'away',
       policy: { permissionTimeoutMs: 200 },
@@ -268,7 +268,7 @@ describe('daemon HTTP', () => {
       .post('/v1/permission')
       .set('X-Kuroboto-Token', TEST_TOKEN)
       .send({ hook_event_name: 'PreToolUse', tool_name: 'Bash', tool_input: {} });
-    expect(res.body).toEqual({ decision: 'deny', reason: 'timeout' });
+    expect(res.body).toEqual({ decision: 'ask', reason: 'timeout' });
   });
 
   it('POST /v1/permission falls back to ask when sendPrompt throws (channel unavailable)', async () => {
